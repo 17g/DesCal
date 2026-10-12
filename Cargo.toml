@@ -1,0 +1,18 @@
+[package]
+name = "descal"
+version = "0.1.0"
+edition = "2021"
+authors = ["DesCal Team"]
+description = "A lightweight, modern taskbar calendar for Windows 11"
+
+[dependencies]
+chrono = "0.4"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_HiDpi",
+    "Win32_System_LibraryLoader",
+] }
