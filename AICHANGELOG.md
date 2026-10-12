@@ -45,3 +45,25 @@
 - **検証結果**:
   - `cargo check`: Exit Code 0 (成功)
   - `cargo test`: 6 passed, 0 failed, Exit Code 0 (成功)
+
+## [2026-10-12] Phase 2.2: マルチモニターおよびDPIスケーリング（Per-Monitor V2）を考慮した画面右下ポップアップ配置座標算出ロジックの実装
+- **Before**:
+  - ウィンドウは固定の座標にしか配置できず、マルチモニター環境やDPIスケーリング（125%、150%、200%等）、タスクバー位置（作業領域 `rcWork`）を考慮した自動配置ロジックが存在しなかった。
+- **After**:
+  - `src/position.rs` を新規作成し、以下の機能を実装：
+    - プロセス全体の `Per-Monitor V2` DPI awareness 有効化（`enable_per_monitor_dpi_v2`）
+    - モニター/ウィンドウ/システムごとの実効DPI取得およびDPIスケーリング計算関数（`scale_value`）
+    - 純粋データモデル（`DisplayRect`, `MonitorBounds`, `TaskbarEdge`, `PopupGeometry`）
+    - 作業領域とモニター領域の差分に基づくタスクバー位置検出およびトレイ近傍（画面右下）ポップアップ配置・クランプ計算（`calculate_popup_geometry`）
+    - カーソル位置やターゲット座標に基づく実モニター取得と配置座標自動算出（`calculate_tray_popup_geometry`）
+  - `src/window.rs` の `CalendarWindow` に `set_geometry` および `reposition_to_tray` メソッドを追加。
+  - 多様なDPI（100%, 125%, 150%, 200%）、マルチモニター負座標（セカンダリモニター）、タスクバー位置別、画面端クランプ処理、トレイアイコン連動、実ウィンドウ再配置を網羅する9件の単体テストを追加（合計15件すべてパス）。
+  - `for_agent/GUARDRAILS.md` に DPIスケーリング・マルチモニター負座標・Win32 APIのResult型扱いの注意点を追記。
+- **変更理由**:
+  - 複数モニター環境や異なるディスプレイ倍率環境でも、常にタスクトレイ近傍（作業領域の右下）に適切なサイズと位置でカレンダーがポップアップ表示されるようにするため。
+- **影響範囲**:
+  - 座標・DPI計算モジュール（`src/position.rs`）、ウィンドウ管理（`src/window.rs`）、エントリーポイント（`src/main.rs`）、ガードレール（`for_agent/GUARDRAILS.md`）。
+- **検証結果**:
+  - `cargo check`: Exit Code 0 (成功)
+  - `cargo test`: 15 passed, 0 failed, Exit Code 0 (成功)
+

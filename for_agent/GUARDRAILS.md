@@ -30,3 +30,7 @@
   - `Error::from_win32()` は存在せず、直前のWin32エラー取得には `windows::core::Error::from_thread()` を使用する。
   - Win32のエラーHRESULT比較（例: `ERROR_CLASS_ALREADY_EXISTS = 0x80070582`）はRustの `i32` 境界外のため、`0x80070582u32 as i32` のように明示的キャストを行うこと。
   - タスクバー非表示および枠なしポップアップを実現するには、`WS_POPUP` および拡張スタイル `WS_EX_TOOLWINDOW | WS_EX_TOPMOST` を設定し、Windows 11のモダンな角丸には `DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND)` を併用すること。
+- **[2026-10-12] マルチモニター・DPIスケーリング（Per-Monitor V2）計算時の注意点**:
+  - `GetCursorPos` などの一部 Win32 API は `BOOL` ではなく `windows::core::Result<()>` を返すシグネチャになっているため、`.as_bool()` ではなく `?` 演算子で伝播する。
+  - プライマリモニターの左側や上側に配置されたセカンダリモニターでは、作業領域（`rcWork`）の座標が負の値になる。座標計算およびクランプ処理（`min_x = work.left`, `max_x = work.right - width`）では必ず負の座標を考慮し、`0` に決め打ちしないこと。
+  - DPI スケーリング計算では `(value * dpi + 48) / 96` を用いることで浮動小数点誤差を排し、高速かつ決定論的なスケーリングを実現する。

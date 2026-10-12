@@ -185,6 +185,40 @@ impl CalendarWindow {
         }
     }
 
+    /// ウィンドウの位置とサイズ（ジオメトリ）を一括更新
+    pub fn set_geometry(&mut self, geo: &crate::position::PopupGeometry) {
+        unsafe {
+            let _ = SetWindowPos(
+                self.hwnd,
+                None,
+                geo.x,
+                geo.y,
+                geo.width,
+                geo.height,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        self.width = geo.width;
+        self.height = geo.height;
+    }
+
+    /// DPIおよびマルチモニターの作業領域を考慮し、タスクトレイ近傍の最適な座標へ再配置
+    pub fn reposition_to_tray(
+        &mut self,
+        base_width: i32,
+        base_height: i32,
+        base_margin: i32,
+    ) -> Result<crate::position::PopupGeometry> {
+        let geo = crate::position::calculate_tray_popup_geometry(
+            None,
+            base_width,
+            base_height,
+            base_margin,
+        )?;
+        self.set_geometry(&geo);
+        Ok(geo)
+    }
+
     /// ウィンドウのウィンドウスタイル (WS_*) を取得
     pub fn get_style(&self) -> WINDOW_STYLE {
         let style = unsafe { GetWindowLongPtrW(self.hwnd, GWL_STYLE) };
@@ -271,5 +305,37 @@ mod tests {
 
         window.hide();
         assert!(!window.is_visible());
+    }
+
+    #[test]
+    fn test_popup_window_reposition() {
+        let config = PopupWindowConfig {
+            title: "DesCal Reposition Test",
+            width: 320,
+            height: 360,
+            initial_x: 0,
+            initial_y: 0,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+
+        // 手動ジオメトリ設定のテスト
+        let custom_geo = crate::position::PopupGeometry {
+            x: 200,
+            y: 300,
+            width: 400,
+            height: 450,
+        };
+        window.set_geometry(&custom_geo);
+        assert_eq!(window.size(), (400, 450));
+
+        // トレイ近傍への再配置テスト（実機のモニター情報から算出）
+        let geo = window
+            .reposition_to_tray(320, 360, 12)
+            .expect("reposition_to_tray 失敗");
+
+        // 算出されたサイズと同期していること
+        assert_eq!(window.size(), (geo.width, geo.height));
+        assert!(geo.width > 0 && geo.height > 0);
     }
 }
