@@ -27,4 +27,21 @@
 - **検証結果**:
   - `cargo check`: Exit Code 0 (成功)
   - `cargo test`: 5 passed, 0 failed, Exit Code 0 (成功)
-
+## [2026-10-12] Phase 2.1: ポップアップ用ウィンドウの作成（枠なし・タスクバー非表示・ツールチップスタイル等の属性設定）
+- **Before**:
+  - ウィンドウの生成や管理モジュールが存在せず、`src/calendar.rs` の日付計算ロジックのみが存在していた。
+- **After**:
+  - `src/window.rs` を新規作成し、カレンダー用ポップアップウィンドウ構造体 `CalendarWindow` および設定構造体 `PopupWindowConfig` を実装。
+  - ウィンドウスタイルとして枠なし・タイトルバーなしの `WS_POPUP` を適用。
+  - 拡張スタイルとしてタスクバー非表示の `WS_EX_TOOLWINDOW`、最前面表示の `WS_EX_TOPMOST` を設定。
+  - Windows 11 の角丸設定 `DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND)` を組み込み。
+  - ウィンドウの表示（`show`）・非表示（`hide`）・位置設定（`set_position`）・属性取得・`Drop` 時の破棄処理を実装。
+  - ポップアップウィンドウの作成、属性値の検証、表示/非表示切り替えを網羅する単体テスト `test_create_popup_window_attributes` を追加。
+  - `for_agent/GUARDRAILS.md` に windows 0.62 におけるエラーコード扱いおよびポップアップ属性の知見を記録。
+- **変更理由**:
+  - タスクトレイと連動する軽量かつモダンなWindows 11調カレンダーポップアップの土台となるウィンドウ基盤を構築するため。
+- **影響範囲**:
+  - ウィンドウ管理モジュール（`src/window.rs`）、エントリーポイント（`src/main.rs`）、ガードレール（`for_agent/GUARDRAILS.md`）。
+- **検証結果**:
+  - `cargo check`: Exit Code 0 (成功)
+  - `cargo test`: 6 passed, 0 failed, Exit Code 0 (成功)

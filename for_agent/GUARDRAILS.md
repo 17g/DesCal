@@ -26,4 +26,7 @@
 ---
 
 ## 3. トラブルシューティング・改訂履歴
-（※作業中に発見されたミスやトラブル、ユーザーからの再発防止指示をここに追記していきます）
+- **[2026-10-12] Windows API (windowsクレート 0.62) におけるエラーコードとウィンドウ生成**:
+  - `Error::from_win32()` は存在せず、直前のWin32エラー取得には `windows::core::Error::from_thread()` を使用する。
+  - Win32のエラーHRESULT比較（例: `ERROR_CLASS_ALREADY_EXISTS = 0x80070582`）はRustの `i32` 境界外のため、`0x80070582u32 as i32` のように明示的キャストを行うこと。
+  - タスクバー非表示および枠なしポップアップを実現するには、`WS_POPUP` および拡張スタイル `WS_EX_TOOLWINDOW | WS_EX_TOPMOST` を設定し、Windows 11のモダンな角丸には `DwmSetWindowAttribute(DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND)` を併用すること。
