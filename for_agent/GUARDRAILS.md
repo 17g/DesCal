@@ -34,3 +34,8 @@
   - `GetCursorPos` などの一部 Win32 API は `BOOL` ではなく `windows::core::Result<()>` を返すシグネチャになっているため、`.as_bool()` ではなく `?` 演算子で伝播する。
   - プライマリモニターの左側や上側に配置されたセカンダリモニターでは、作業領域（`rcWork`）の座標が負の値になる。座標計算およびクランプ処理（`min_x = work.left`, `max_x = work.right - width`）では必ず負の座標を考慮し、`0` に決め打ちしないこと。
   - DPI スケーリング計算では `(value * dpi + 48) / 96` を用いることで浮動小数点誤差を排し、高速かつ決定論的なスケーリングを実現する。
+- **[2026-10-12] GDIダブルバッファリング描画とウィンドウ状態管理（GWLP_USERDATA）**:
+  - `RECT` 構造体は `PartialEq` のみ実装されており `Eq` を実装していないため、これを含む構造体の derive マクロには `Eq` を含めず `PartialEq` のみとする。
+  - ウィンドウ再描画時のチラつき（フリッカー）を完全に防止するため、`WM_ERASEBKGND` メッセージで `LRESULT(1)` を返してシステム標準の背景消去を抑制し、`WM_PAINT` 内部で互換DC（`CreateCompatibleDC`）と互換ビットマップ（`CreateCompatibleBitmap`）によるダブルバッファリングを行い、`BitBlt` で一括転送する。
+  - GDIオブジェクト（`HBRUSH`, `HPEN`, `HFONT`, `HBITMAP`, メモリ `HDC`）のリークを完全に防止するため、RAIIラッパー（`Drop` 時に `DeleteObject(obj.into())` や `DeleteDC` を呼ぶ構造体）を用い、また `SelectObject` は選択前の旧オブジェクトを保持してスコープ終了時に確実に復元する。
+  - `wnd_proc` からウィンドウの内部状態（`CalendarModel`, `CalendarTheme`, DPI等）にアクセスするため `SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr)` を用い、ウィンドウ破棄時（`Drop`）には `SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0)` で登録を解除することで、不正メモリアクセスを防止する。

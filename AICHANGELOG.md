@@ -57,7 +57,7 @@
     - 作業領域とモニター領域の差分に基づくタスクバー位置検出およびトレイ近傍（画面右下）ポップアップ配置・クランプ計算（`calculate_popup_geometry`）
     - カーソル位置やターゲット座標に基づく実モニター取得と配置座標自動算出（`calculate_tray_popup_geometry`）
   - `src/window.rs` の `CalendarWindow` に `set_geometry` および `reposition_to_tray` メソッドを追加。
-  - 多様なDPI（100%, 125%, 150%, 200%）、マルチモニター負座標（セカンダリモニター）、タスクバー位置別、画面端クランプ処理、トレイアイコン連動、実ウィンドウ再配置を網羅する9件の単体テストを追加（合計15件すべてパス）。
+    - 多様なDPI（100%, 125%, 150%, 200%）、マルチモニター負座標（セカンダリモニター）、タスクバー位置別、画面端クランプ処理、トレイアイコン連動、実ウィンドウ再配置を網羅する9件の単体テストを追加（合計15件すべてパス）。
   - `for_agent/GUARDRAILS.md` に DPIスケーリング・マルチモニター負座標・Win32 APIのResult型扱いの注意点を追記。
 - **変更理由**:
   - 複数モニター環境や異なるディスプレイ倍率環境でも、常にタスクトレイ近傍（作業領域の右下）に適切なサイズと位置でカレンダーがポップアップ表示されるようにするため。
@@ -66,4 +66,35 @@
 - **検証結果**:
   - `cargo check`: Exit Code 0 (成功)
   - `cargo test`: 15 passed, 0 failed, Exit Code 0 (成功)
+
+## [2026-10-13] Phase 2.3: カレンダーの基本UI描画基盤の実装（ヘッダー部、曜日行、日付グリッドセル、当日ハイライト表示）
+- **Before**:
+  - `CalendarWindow` は枠なし・タスクバー非表示のポップアップウィンドウを生成・配置できるのみで、カレンダー描画処理（`WM_PAINT` / GDI）やカレンダーデータ・UI状態の保持・表示基盤が存在しなかった。
+- **After**:
+  - `src/render.rs` を新規作成し、以下のUI描画システムを実装：
+    - Windows 11調のモダンUIカラーテーマ（`CalendarTheme`）およびRGB変換ヘルパー（`rgb`）
+    - DPIスケーリングを考慮したUIレイアウト幾何計算（`CalendarLayout`: クライアント領域、ヘッダー部、年月タイトル、ナビゲーションボタン、曜日行、42マスグリッドセル）およびヒットテスト関数
+    - GDIオブジェクトの安全な自動破棄（RAIIパターン: `AutoDeleteGdi`, `AutoSelectObject`, `AutoDeleteDc`）によるリーク防止
+    - 高品位なDPI対応フォント作成ヘルパー（`create_gdi_font`: Segoe UI / ClearType）
+    - チラつきを防止するダブルバッファリング描画エンジン（`CalendarRenderer::paint`）
+      - 背景塗りつぶし
+      - ヘッダー描画（年月タイトル、前月/今日/翌月ボタン）
+      - 曜日行描画（日, 月, 火, 水, 木, 金, 土、日祝ソフトレッド・土曜ソフトブルー）
+      - 42マス日付セル描画（当月白、前月翌月グレー、日曜・土曜カラー、当日ハイライトの角丸ピル背景＆白太字）
+      - `BitBlt` による高速フロントバッファ転送
+  - `src/window.rs` の `CalendarWindow` を拡張：
+    - ウィンドウ状態構造体 `WindowState`（`CalendarModel`, `CalendarTheme`, `dpi`）を保持し、`GWLP_USERDATA` を通じて `wnd_proc` と連携
+    - `WM_PAINT` でのダブルバッファリング描画実行、`WM_ERASEBKGND` でのチラつき抑制
+    - カレンダーモデルやテーマへの参照・可変参照取得、`refresh()`、`prev_month()`、`next_month()`、`go_to_today()`、`set_date()`、`layout()` などの操作APIを追加
+    - ウィンドウ破棄時に `GWLP_USERDATA` を安全にリセットするクリーンアップ
+  - 単体テスト・統合テストを追加（レイアウト計算、ヒットテスト、実機DCによる描画パイプライン検証、ウィンドウ状態操作、ライフサイクル等、全21テスト成功）
+  - `for_agent/GUARDRAILS.md` に GDIダブルバッファリング、RAII管理、`RECT` の `Eq` 未実装、`GWLP_USERDATA` 管理に関するガイドラインを追記。
+- **変更理由**:
+  - カレンダー基本UI描画基盤（ヘッダー部、曜日行、日付グリッドセル、当日ハイライト表示）をWindows 11調のモダンなデザインで美しく・高速・チラつきなく実現するため。
+- **影響範囲**:
+  - カレンダー描画エンジン（`src/render.rs`）、ウィンドウ管理（`src/window.rs`）、エントリーポイント（`src/main.rs`）、ガードレール（`for_agent/GUARDRAILS.md`）。
+- **検証結果**:
+  - `cargo check`: Exit Code 0 (成功)
+  - `cargo test`: 21 passed, 0 failed, Exit Code 0 (成功)
+
 

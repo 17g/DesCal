@@ -1,19 +1,24 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::core::{w, Error, Result, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWM_WINDOW_CORNER_PREFERENCE,
     DWMWCP_ROUND,
 };
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, IsWindow, IsWindowVisible,
-    LoadCursorW, RegisterClassExW, SetWindowPos, ShowWindow,
-    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWL_EXSTYLE, GWL_STYLE,
-    IDC_ARROW, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW, IsWindow,
+    IsWindowVisible, LoadCursorW, RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, GWL_STYLE, IDC_ARROW,
+    SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WM_ERASEBKGND, WM_PAINT,
 };
+
+use crate::calendar::CalendarModel;
+use crate::position::{enable_per_monitor_dpi_v2, get_window_dpi, BASE_DPI};
+use crate::render::{CalendarLayout, CalendarRenderer, CalendarTheme};
 
 const CLASS_NAME: PCWSTR = w!("DesCalCalendarWindowClass");
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -40,20 +45,36 @@ impl Default for PopupWindowConfig {
     }
 }
 
+/// ウィンドウに関連付けられる状態データ
+pub struct WindowState {
+    pub calendar: CalendarModel,
+    pub theme: CalendarTheme,
+    pub dpi: u32,
+}
+
 /// タスクトレイ連動用カレンダーポップアップウィンドウ
 pub struct CalendarWindow {
     hwnd: HWND,
     width: i32,
     height: i32,
+    state: Box<WindowState>,
 }
 
 impl CalendarWindow {
     /// ポップアップウィンドウを作成
     pub fn new(config: &PopupWindowConfig) -> Result<Self> {
+        let _ = enable_per_monitor_dpi_v2();
+
         let h_instance = unsafe { GetModuleHandleW(None)? };
         let h_instance: HINSTANCE = HINSTANCE(h_instance.0);
 
         Self::ensure_class_registered(h_instance)?;
+
+        let mut state = Box::new(WindowState {
+            calendar: CalendarModel::new(),
+            theme: CalendarTheme::default(),
+            dpi: BASE_DPI,
+        });
 
         // スタイル:
         // WS_POPUP: タイトルバー・枠線のないポップアップウィンドウ
@@ -82,6 +103,18 @@ impl CalendarWindow {
             )?
         };
 
+        // ウィンドウの初期DPIを取得
+        state.dpi = get_window_dpi(hwnd);
+
+        // GWLP_USERDATA に状態ポインタを紐付け
+        unsafe {
+            let _ = SetWindowLongPtrW(
+                hwnd,
+                GWLP_USERDATA,
+                &mut *state as *mut WindowState as isize,
+            );
+        }
+
         // Windows 11 の角丸設定 (DWMWCP_ROUND)
         unsafe {
             let preference = DWMWCP_ROUND;
@@ -97,6 +130,7 @@ impl CalendarWindow {
             hwnd,
             width: config.width,
             height: config.height,
+            state,
         })
     }
 
@@ -200,6 +234,70 @@ impl CalendarWindow {
         }
         self.width = geo.width;
         self.height = geo.height;
+        self.state.dpi = get_window_dpi(self.hwnd);
+        self.refresh();
+    }
+
+    /// カレンダーモデルへの参照を取得
+    pub fn model(&self) -> &CalendarModel {
+        &self.state.calendar
+    }
+
+    /// カレンダーモデルへの可変参照を取得
+    pub fn model_mut(&mut self) -> &mut CalendarModel {
+        &mut self.state.calendar
+    }
+
+    /// テーマへの参照を取得
+    pub fn theme(&self) -> &CalendarTheme {
+        &self.state.theme
+    }
+
+    /// テーマへの可変参照を取得
+    pub fn theme_mut(&mut self) -> &mut CalendarTheme {
+        &mut self.state.theme
+    }
+
+    /// 現在のDPI値を取得
+    pub fn dpi(&self) -> u32 {
+        self.state.dpi
+    }
+
+    /// 再描画要求をトリガー
+    pub fn refresh(&self) {
+        unsafe {
+            let _ = InvalidateRect(Some(self.hwnd), None, false);
+        }
+    }
+
+    /// 前月に移動して再描画
+    pub fn prev_month(&mut self) {
+        self.state.calendar.prev_month();
+        self.refresh();
+    }
+
+    /// 翌月に移動して再描画
+    pub fn next_month(&mut self) {
+        self.state.calendar.next_month();
+        self.refresh();
+    }
+
+    /// 今日の月に移動して再描画
+    pub fn go_to_today(&mut self) {
+        self.state.calendar.go_to_today();
+        self.refresh();
+    }
+
+    /// 年月を直接指定して再描画
+    pub fn set_date(&mut self, year: i32, month: u32) {
+        self.state.calendar.view_year = year;
+        self.state.calendar.view_month = month;
+        self.refresh();
+    }
+
+    /// 現在のレイアウト幾何情報を取得
+    pub fn layout(&self) -> CalendarLayout {
+        CalendarLayout::calculate(self.width, self.height, self.state.dpi)
     }
 
     /// DPIおよびマルチモニターの作業領域を考慮し、タスクトレイ近傍の最適な座標へ再配置
@@ -238,6 +336,37 @@ impl CalendarWindow {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
+        let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+        if !state_ptr.is_null() {
+            let state = &mut *state_ptr;
+            match msg {
+                WM_PAINT => {
+                    let mut ps = PAINTSTRUCT::default();
+                    let hdc = BeginPaint(hwnd, &mut ps);
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    let width = rc.right - rc.left;
+                    let height = rc.bottom - rc.top;
+
+                    CalendarRenderer::paint(
+                        hdc,
+                        width,
+                        height,
+                        state.dpi,
+                        &state.calendar,
+                        &state.theme,
+                    );
+
+                    let _ = EndPaint(hwnd, &ps);
+                    return LRESULT(0);
+                }
+                WM_ERASEBKGND => {
+                    // チラつき防止のため背景消去はスキップ（CalendarRenderer で一括描画）
+                    return LRESULT(1);
+                }
+                _ => {}
+            }
+        }
         DefWindowProcW(hwnd, msg, wparam, lparam)
     }
 }
@@ -246,6 +375,7 @@ impl Drop for CalendarWindow {
     fn drop(&mut self) {
         if self.is_valid() {
             unsafe {
+                let _ = SetWindowLongPtrW(self.hwnd, GWLP_USERDATA, 0);
                 let _ = DestroyWindow(self.hwnd);
             }
         }
@@ -255,6 +385,7 @@ impl Drop for CalendarWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Datelike;
 
     #[test]
     fn test_create_popup_window_attributes() {
@@ -337,5 +468,71 @@ mod tests {
         // 算出されたサイズと同期していること
         assert_eq!(window.size(), (geo.width, geo.height));
         assert!(geo.width > 0 && geo.height > 0);
+    }
+
+    #[test]
+    fn test_window_calendar_state_and_navigation() {
+        let config = PopupWindowConfig {
+            title: "DesCal Nav Test",
+            width: 320,
+            height: 360,
+            initial_x: 10,
+            initial_y: 10,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+
+        // 初期状態でテーマとカレンダーモデルが存在すること
+        assert_eq!(window.theme().header_text_color, crate::render::rgb(255, 255, 255));
+        assert!(window.dpi() > 0);
+
+        // 日付手動変更
+        window.set_date(2026, 10);
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 10);
+
+        // 前月移動
+        window.prev_month();
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 9);
+
+        // 翌月移動
+        window.next_month();
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 10);
+
+        // 今日へジャンプ
+        window.go_to_today();
+        assert_eq!(window.model().view_year, window.model().today.year());
+        assert_eq!(window.model().view_month, window.model().today.month());
+
+        // レイアウト情報の整合性
+        let layout = window.layout();
+        assert_eq!(layout.cell_rects.len(), 42);
+        assert_eq!(layout.weekday_rects.len(), 7);
+
+        // 再描画要求の呼び出し確認
+        window.refresh();
+    }
+
+    #[test]
+    fn test_window_paint_lifecycle() {
+        let config = PopupWindowConfig {
+            title: "DesCal Paint Lifecycle Test",
+            width: 320,
+            height: 360,
+            initial_x: 20,
+            initial_y: 20,
+        };
+
+        let window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        window.show();
+        assert!(window.is_visible());
+
+        // 再描画メッセージの処理
+        window.refresh();
+
+        window.hide();
+        assert!(!window.is_visible());
     }
 }
