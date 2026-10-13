@@ -15,11 +15,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, GetWindowLongPtrW,
     IsWindow, IsWindowVisible, LoadCursorW, PostQuitMessage, RegisterClassExW, SetCursor,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
-    GWL_EXSTYLE, GWL_STYLE, IDC_ARROW, IDC_HAND, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
-    SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WM_COMMAND, WM_DESTROY, WM_ERASEBKGND,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, CS_DBLCLKS, CS_HREDRAW,
+    CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, GWL_STYLE, IDC_ARROW, IDC_HAND, SWP_NOACTIVATE,
+    SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSEXW,
+    WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WM_COMMAND,
+    WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
+    WM_SETCURSOR,
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -27,7 +28,7 @@ const WM_MOUSELEAVE: u32 = 0x02A3;
 pub const WHEEL_DELTA: i32 = 120;
 
 use crate::calendar::CalendarModel;
-use crate::position::{enable_per_monitor_dpi_v2, get_window_dpi, BASE_DPI};
+use crate::position::{enable_per_monitor_dpi_v2, get_window_dpi, BASE_DPI, DEFAULT_BASE_MARGIN};
 use crate::render::{CalendarLayout, CalendarRenderer, CalendarTheme, NavButton};
 use crate::tray::{
     parse_tray_message, TrayContextMenu, TrayEvent, TrayIcon, TrayMenuCommand, DEFAULT_TRAY_UID,
@@ -64,6 +65,9 @@ pub struct WindowState {
     pub calendar: CalendarModel,
     pub theme: CalendarTheme,
     pub dpi: u32,
+    pub base_width: i32,
+    pub base_height: i32,
+    pub base_margin: i32,
     pub hovered_nav: Option<NavButton>,
     pub pressed_nav: Option<NavButton>,
     pub wheel_delta_accum: i32,
@@ -99,25 +103,73 @@ impl WindowState {
         }
     }
 
+    /// ウィンドウが現在表示状態かどうかを判定
+    pub fn is_visible(&self, hwnd: HWND) -> bool {
+        unsafe { IsWindowVisible(hwnd).as_bool() }
+    }
+
+    /// カレンダーポップアップの表示・非表示をトグルし、新しい表示状態（表示時: true, 非表示時: false）を返す
+    pub fn toggle_popup(&mut self, hwnd: HWND) -> bool {
+        if self.is_visible(hwnd) {
+            self.hide_popup(hwnd);
+            false
+        } else {
+            self.show_popup(hwnd);
+            true
+        }
+    }
+
+    /// カレンダーポップアップを表示し、タスクトレイ近傍の最新位置に再配置してアクティブ化する
+    pub fn show_popup(&mut self, hwnd: HWND) {
+        self.calendar.refresh_today();
+
+        // 最新のカーソル位置・トレイ位置およびDPIに基づいてポップアップ位置を再配置
+        if let Ok(geo) = crate::position::calculate_tray_popup_geometry(
+            None,
+            self.base_width,
+            self.base_height,
+            self.base_margin,
+        ) {
+            unsafe {
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    geo.x,
+                    geo.y,
+                    geo.width,
+                    geo.height,
+                    SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+            self.dpi = get_window_dpi(hwnd);
+        }
+
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_SHOW);
+            let _ = SetForegroundWindow(hwnd);
+            let _ = InvalidateRect(Some(hwnd), None, false);
+        }
+    }
+
+    /// カレンダーポップアップを非表示にする
+    pub fn hide_popup(&mut self, hwnd: HWND) {
+        unsafe {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+        self.hovered_nav = None;
+        self.pressed_nav = None;
+    }
+
     /// トレイのコンテキストメニューコマンドを実行する
     pub fn execute_menu_command(&mut self, hwnd: HWND, cmd: TrayMenuCommand) {
         match cmd {
-            TrayMenuCommand::ToggleCalendar => unsafe {
-                let visible = IsWindowVisible(hwnd).as_bool();
-                if visible {
-                    let _ = ShowWindow(hwnd, SW_HIDE);
-                } else {
-                    let _ = ShowWindow(hwnd, SW_SHOW);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
-            },
+            TrayMenuCommand::ToggleCalendar => {
+                self.toggle_popup(hwnd);
+            }
             TrayMenuCommand::GoToday => {
                 self.wheel_delta_accum = 0;
                 self.calendar.go_to_today();
-                unsafe {
-                    let _ = ShowWindow(hwnd, SW_SHOW);
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
+                self.show_popup(hwnd);
             }
             TrayMenuCommand::Exit => {
                 self.should_quit = true;
@@ -152,6 +204,9 @@ impl CalendarWindow {
             calendar: CalendarModel::new(),
             theme: CalendarTheme::default(),
             dpi: BASE_DPI,
+            base_width: config.width,
+            base_height: config.height,
+            base_margin: DEFAULT_BASE_MARGIN,
             hovered_nav: None,
             pressed_nav: None,
             wheel_delta_accum: 0,
@@ -386,6 +441,35 @@ impl CalendarWindow {
         CalendarLayout::calculate(self.width, self.height, self.state.dpi)
     }
 
+    /// カレンダーポップアップの表示・非表示をトグルし、新しい表示状態（表示: true, 非表示: false）を返す
+    pub fn toggle(&mut self) -> bool {
+        let hwnd = self.hwnd;
+        let visible = self.state.toggle_popup(hwnd);
+        let mut rc = RECT::default();
+        if unsafe { GetClientRect(hwnd, &mut rc) }.is_ok() {
+            self.width = rc.right - rc.left;
+            self.height = rc.bottom - rc.top;
+        }
+        visible
+    }
+
+    /// カレンダーポップアップを表示し、タスクトレイ近傍の最新位置に再配置してアクティブ化する
+    pub fn show_popup(&mut self) {
+        let hwnd = self.hwnd;
+        self.state.show_popup(hwnd);
+        let mut rc = RECT::default();
+        if unsafe { GetClientRect(hwnd, &mut rc) }.is_ok() {
+            self.width = rc.right - rc.left;
+            self.height = rc.bottom - rc.top;
+        }
+    }
+
+    /// カレンダーポップアップを非表示にする
+    pub fn hide_popup(&mut self) {
+        let hwnd = self.hwnd;
+        self.state.hide_popup(hwnd);
+    }
+
     /// DPIおよびマルチモニターの作業領域を考慮し、タスクトレイ近傍の最適な座標へ再配置
     pub fn reposition_to_tray(
         &mut self,
@@ -393,6 +477,9 @@ impl CalendarWindow {
         base_height: i32,
         base_margin: i32,
     ) -> Result<crate::position::PopupGeometry> {
+        self.state.base_width = base_width;
+        self.state.base_height = base_height;
+        self.state.base_margin = base_margin;
         let geo = crate::position::calculate_tray_popup_geometry(
             None,
             base_width,
@@ -701,6 +788,7 @@ impl CalendarWindow {
                             return LRESULT(0);
                         }
                         TrayEvent::LeftClick => {
+                            state.toggle_popup(hwnd);
                             return LRESULT(0);
                         }
                         TrayEvent::Other(_) => {}
@@ -1278,6 +1366,109 @@ mod tests {
             assert!(has_quit, "WM_QUIT メッセージがポストされていません");
             assert_eq!(msg.message, WM_QUIT);
         }
+    }
+
+    #[test]
+    fn test_calendar_window_toggle_and_show_hide() {
+        let config = PopupWindowConfig {
+            title: "DesCal Toggle Test",
+            width: 320,
+            height: 360,
+            initial_x: 10,
+            initial_y: 10,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        assert!(!window.is_visible());
+
+        // 1. toggle() で非表示から表示へ
+        let is_vis = window.toggle();
+        assert!(is_vis);
+        assert!(window.is_visible());
+
+        // 2. toggle() で表示から非表示へ
+        let is_vis = window.toggle();
+        assert!(!is_vis);
+        assert!(!window.is_visible());
+
+        // 3. show_popup() で直接表示
+        window.show_popup();
+        assert!(window.is_visible());
+
+        // 4. hide_popup() で直接非表示
+        window.hide_popup();
+        assert!(!window.is_visible());
+    }
+
+    #[test]
+    fn test_wm_trayicon_left_click_toggle_popup() {
+        use windows::Win32::UI::WindowsAndMessaging::{WM_LBUTTONDBLCLK, WM_LBUTTONUP};
+
+        let config = PopupWindowConfig {
+            title: "DesCal Tray LeftClick Test",
+            width: 320,
+            height: 360,
+            initial_x: 20,
+            initial_y: 20,
+        };
+
+        let window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        assert!(!window.is_visible(), "初期状態は非表示である必要があります");
+
+        // 1. WM_TRAYICON (WM_LBUTTONUP) 送信 -> 非表示から表示へトグル
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_TRAYICON,
+                Some(WPARAM(DEFAULT_TRAY_UID as usize)),
+                Some(LPARAM(WM_LBUTTONUP as isize)),
+            );
+        }
+        assert!(
+            window.is_visible(),
+            "トレイアイコン左クリック後にカレンダーが表示されていません"
+        );
+
+        // 2. 再度 WM_TRAYICON (WM_LBUTTONUP) 送信 -> 表示から非表示へトグル
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_TRAYICON,
+                Some(WPARAM(DEFAULT_TRAY_UID as usize)),
+                Some(LPARAM(WM_LBUTTONUP as isize)),
+            );
+        }
+        assert!(
+            !window.is_visible(),
+            "トレイアイコン左クリック再実行後にカレンダーが非表示になっていません"
+        );
+
+        // 3. WM_TRAYICON (WM_LBUTTONDBLCLK) 送信 -> ダブルクリックでもトグル動作すること
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_TRAYICON,
+                Some(WPARAM(DEFAULT_TRAY_UID as usize)),
+                Some(LPARAM(WM_LBUTTONDBLCLK as isize)),
+            );
+        }
+        assert!(
+            window.is_visible(),
+            "トレイアイコンダブルクリック後にカレンダーが表示されていません"
+        );
+
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_TRAYICON,
+                Some(WPARAM(DEFAULT_TRAY_UID as usize)),
+                Some(LPARAM(WM_LBUTTONDBLCLK as isize)),
+            );
+        }
+        assert!(
+            !window.is_visible(),
+            "トレイアイコンダブルクリック再実行後にカレンダーが非表示になっていません"
+        );
     }
 }
 

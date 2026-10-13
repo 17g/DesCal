@@ -176,3 +176,26 @@
 - **検証結果**:
   - `cargo check`: Exit Code 0 (成功, 警告0件)
   - `cargo test`: 34 passed, 0 failed, Exit Code 0 (成功)
+
+## [2026-10-13] Phase 4.2: トレイアイコン左クリックによるカレンダーポップアップの表示/非表示（トグル）制御の実装
+- **Before**:
+  - システムトレイ常駐および右クリックメニュー（`TrayContextMenu`）による表示切替・終了は実装されていたが、トレイ通知メッセージ `WM_TRAYICON` において左クリックイベント（`TrayEvent::LeftClick`: `WM_LBUTTONUP` / `WM_LBUTTONDBLCLK`）のハンドラが空であり、トレイアイコンを左クリックしてもカレンダーポップアップが表示・トグルされなかった。
+- **After**:
+  - `src/window.rs`:
+    - `WindowState` に基本寸法・マージンフィールド（`base_width`, `base_height`, `base_margin`）を追加。
+    - `WindowState` に表示判定（`is_visible`）、最新トレイ座標再計算・フォアグラウンドアクティブ化を伴う表示（`show_popup`）、非表示（`hide_popup`）、および表示/非表示を切り替えるトグル制御（`toggle_popup`）メソッドを実装。
+    - ポップアップ表示契機で `CalendarModel::refresh_today()` を呼び出すことで、長時間常駐して日付を跨いだ場合でも常に正確な現在日を同期。
+    - `execute_menu_command` におけるメニューの「カレンダーを表示/隠す」「今日へ移動」も `toggle_popup` / `show_popup` を呼び出す形に統合し、振る舞いの一貫性を確立。
+    - `CalendarWindow` にパブリックメソッド `toggle(&mut self) -> bool`、`show_popup(&mut self)`、`hide_popup(&mut self)` を追加し、表示時にクライアントサイズを自動同期。
+    - `wnd_proc` の `WM_TRAYICON` において `TrayEvent::LeftClick` を検知した際、`state.toggle_popup(hwnd)` を呼び出してカレンダーの表示/非表示を瞬時にトグル制御。
+    - トレイアイコン左クリック（シングルクリック `WM_LBUTTONUP` およびダブルクリック `WM_LBUTTONDBLCLK`）によるポップアップトグル制御、および `CalendarWindow` の表示/非表示ライフサイクルを網羅する単体テスト2件（`test_calendar_window_toggle_and_show_hide`, `test_wm_trayicon_left_click_toggle_popup`）を追加（全36テストすべて成功）。
+  - `for_agent/GUARDRAILS.md`:
+    - トレイ左クリックによるカレンダーポップアップのトグル制御、最前面アクティブ化（`SetForegroundWindow`）、日付自動同期、`GetClientRect` の `Result` 型扱いに関するガードレール知見を追記。
+- **変更理由**:
+  - 仕様書（`SPECIFICATIONS.md` 4.1, 4.2, 8.3）に基づき、Windows 11のタスクトレイアイコンを左クリックした際にカレンダーが素早く画面右下にポップアップ表示/非表示（トグル）されるようにするため。
+- **影響範囲**:
+  - ウィンドウ管理・イベント処理（`src/window.rs`）、ガードレール（`for_agent/GUARDRAILS.md`）。
+- **検証結果**:
+  - `cargo check`: Exit Code 0 (成功, 警告0件)
+  - `cargo test`: 36 passed, 0 failed, Exit Code 0 (成功)
+

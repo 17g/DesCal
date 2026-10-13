@@ -49,4 +49,10 @@
   - トレイアイコンの右クリックメニュー表示（`TrackPopupMenu`）では、MSDN KB135788 の定石に従い、呼び出し直前に `SetForegroundWindow(hwnd)`、呼び出し直後に `PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0))` を実行すること。これを省略すると、メニュー外をクリックしてもコンテキストメニューが閉じない不具合が発生する。
   - `TrackPopupMenu` のフラグに `TPM_RETURNCMD | TPM_NONOTIFY` を指定して選択されたコマンドIDを直接受け取る方式と、`WM_COMMAND` メッセージ経由で処理する方式の両方をサポートすることで、実機操作と自動テスト（`SendMessageW(hwnd, WM_COMMAND, ...)`）の双方で一貫した動作検証が可能になる。
   - サンドボックスや非対話型テストランナー環境では、Explorer（`Shell_TrayWnd`）へのIPCがUIPI（User Interface Privilege Isolation）によって制限され、`Shell_NotifyIconW(NIM_ADD, ...)` が `FALSE`（`HRESULT(0x80004005)`）を返す場合がある。そのため、`IsWindow` でウィンドウハンドルの有効性を検証した上で、`shell_bound` フラグによって実シェルバインド状態とインメモリ常駐状態を適切に管理すること。
+- **[2026-10-13] トレイ左クリックによるカレンダーポップアップの表示/非表示（トグル）制御とアクティブ化**:
+  - `TrayEvent::LeftClick`（`WM_LBUTTONUP` / `WM_LBUTTONDBLCLK`）のハンドリングにおいて、ウィンドウが表示中の場合は `ShowWindow(SW_HIDE)` で非表示にし、非表示の場合は `show_popup()` で表示する。
+  - ポップアップ表示時は、最新のカーソル位置/トレイ位置およびマルチモニター作業領域・DPIスケーリングを再計算（`calculate_tray_popup_geometry`）して `SetWindowPos` で位置合わせを行い、`ShowWindow(SW_SHOW)` と `SetForegroundWindow(hwnd)` を呼び出して確実に最前面アクティブ状態にすること。最前面アクティブ状態にしないと、以後のポップアップ外クリック検知（フォーカス喪失）が正しく機能しない。
+  - ポップアップ表示契機で `CalendarModel::refresh_today()` を呼び出すことで、長時間常駐して日付を跨いだ場合でも常に正しい「今日」がハイライト表示されるように同期する。
+  - `GetClientRect` などの Win32 API は `BOOL` ではなく `windows::core::Result<()>` を返すため、`.as_bool()` ではなく `.is_ok()` または `?` で結果を判定すること。
+
 
