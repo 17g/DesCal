@@ -153,4 +153,26 @@
   - `cargo check`: Exit Code 0 (成功, 警告0件)
   - `cargo test`: 27 passed, 0 failed, Exit Code 0 (成功)
 
-
+## [2026-10-13] Phase 4.1: システムトレイアイコンの常駐と右クリックメニュー（「終了」等）の実装
+- **Before**:
+  - カレンダーポップアップウィンドウの生成・描画・月移動機能は存在していたが、Windowsのシステムトレイ（タスクトレイ）へアイコンを常駐させるモジュールおよび右クリックメニュー（「終了」等）、常駐メッセージループが存在しなかった。
+- **After**:
+  - `src/tray.rs` を新規作成し、以下の機能を実装：
+    - 外部ファイル不要で動作する32x32ピクセルのWindows 11調カレンダー型トレイアイコンのGDI動的生成（`create_calendar_tray_icon`）と標準アイコンへのフォールバック。
+    - `NOTIFYICONDATAW` の構築（`build_notify_icon_data`）、UTF-16ツールチップエンコード（`encode_tooltip`）、`Shell_NotifyIconW`（`NIM_ADD` / `NIM_MODIFY` / `NIM_DELETE`）および `Drop` によるRAII自動クリーンアップを備えた `TrayIcon` 構造体。
+    - トレイ通知メッセージ（`WM_TRAYICON`）の解析関数 `parse_tray_message` および `TrayEvent` 列挙型。
+    - 右クリックコンテキストメニュー（「カレンダーを表示/隠す」「今日へ移動」「終了」）を生成・RAII管理し、MSDN KB135788 定石（`SetForegroundWindow` + `TrackPopupMenu` + `WM_NULL` ポスト）に従って表示する `TrayContextMenu` および `TrayMenuCommand`。
+  - `src/window.rs`:
+    - `WindowState` に `should_quit` フラグおよび `execute_menu_command` を追加。
+    - `CalendarWindow` に `create_tray_icon`、`execute_menu_command`、`should_quit` を追加し、`wnd_proc` で `WM_TRAYICON`、`WM_COMMAND`、`WM_DESTROY` をハンドリング。
+  - `src/main.rs`:
+    - 起動時にポップアップウィンドウとトレイアイコンを初期化して常駐待機し、「終了」操作（`WM_QUIT`）で正常終了する `run_app` / `run_message_loop` を実装。
+  - 単体テスト7件（メニューコマンド変換、トレイメッセージ解析、ツールチップ境界値、動的アイコン生成、コンテキストメニュー項目構成、トレイアイコンライフサイクル、`WM_COMMAND` による表示切替・今日移動・終了要求および `WM_QUIT` 検証）を追加（全34テスト成功）。
+  - `for_agent/GUARDRAILS.md` にシステムトレイ常駐と右クリックコンテキストメニュー制御の知見を追記。
+- **変更理由**:
+  - 仕様書（`SPECIFICATIONS.md` 4.1, 8.2, 8.6）に基づき、起動時にタスクトレイへ常駐し、右クリックメニューからアプリケーションを正常に終了・操作できるようにするため。
+- **影響範囲**:
+  - トレイ制御モジュール（`src/tray.rs`）、ウィンドウ管理（`src/window.rs`）、エントリーポイント（`src/main.rs`）、ガードレール（`for_agent/GUARDRAILS.md`）。
+- **検証結果**:
+  - `cargo check`: Exit Code 0 (成功, 警告0件)
+  - `cargo test`: 34 passed, 0 failed, Exit Code 0 (成功)

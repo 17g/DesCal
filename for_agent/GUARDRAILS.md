@@ -45,4 +45,8 @@
   - `SendMessageW` の `wparam` / `lparam` は windows 0.62 では `Option<WPARAM>` / `Option<LPARAM>` を要求するため、`Some(WPARAM(...))` / `Some(LPARAM(...))` でラップすること。
   - マウスホバー・押下状態（`NavButton`）に応じたUIフィードバック（テーマ色切り替え）と、`WM_SETCURSOR` での `IDC_HAND` カーソル設定を併用することで、ボタンの視認性とクリック操作の直感性を高める。
   - `WM_MOUSEWHEEL` メッセージにおけるホイール回転量（`zDelta`）は `((wparam.0 >> 16) & 0xffff) as i16` で上位16ビットを符号付き整数として抽出する。高精度タッチパッド等の端数回転量（`< 120`）に対応するため、`wheel_delta_accum` に蓄積して `WHEEL_DELTA (120)` 単位で月送りを行い、逆方向へのスクロール転換時には蓄積値を `0` にリセットすることでスムーズさと即応性を両立させる。
+- **[2026-10-13] システムトレイ常駐（`Shell_NotifyIconW`）と右クリックコンテキストメニュー制御**:
+  - トレイアイコンの右クリックメニュー表示（`TrackPopupMenu`）では、MSDN KB135788 の定石に従い、呼び出し直前に `SetForegroundWindow(hwnd)`、呼び出し直後に `PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0))` を実行すること。これを省略すると、メニュー外をクリックしてもコンテキストメニューが閉じない不具合が発生する。
+  - `TrackPopupMenu` のフラグに `TPM_RETURNCMD | TPM_NONOTIFY` を指定して選択されたコマンドIDを直接受け取る方式と、`WM_COMMAND` メッセージ経由で処理する方式の両方をサポートすることで、実機操作と自動テスト（`SendMessageW(hwnd, WM_COMMAND, ...)`）の双方で一貫した動作検証が可能になる。
+  - サンドボックスや非対話型テストランナー環境では、Explorer（`Shell_TrayWnd`）へのIPCがUIPI（User Interface Privilege Isolation）によって制限され、`Shell_NotifyIconW(NIM_ADD, ...)` が `FALSE`（`HRESULT(0x80004005)`）を返す場合がある。そのため、`IsWindow` でウィンドウハンドルの有効性を検証した上で、`shell_bound` フラグによって実シェルバインド状態とインメモリ常駐状態を適切に管理すること。
 

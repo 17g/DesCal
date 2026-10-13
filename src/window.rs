@@ -14,12 +14,12 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, GetWindowLongPtrW,
-    IsWindow, IsWindowVisible, LoadCursorW, RegisterClassExW, SetCursor, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE,
-    GWL_STYLE, IDC_ARROW, IDC_HAND, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
+    IsWindow, IsWindowVisible, LoadCursorW, PostQuitMessage, RegisterClassExW, SetCursor,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA,
+    GWL_EXSTYLE, GWL_STYLE, IDC_ARROW, IDC_HAND, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
+    SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WM_COMMAND, WM_DESTROY, WM_ERASEBKGND,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -29,6 +29,10 @@ pub const WHEEL_DELTA: i32 = 120;
 use crate::calendar::CalendarModel;
 use crate::position::{enable_per_monitor_dpi_v2, get_window_dpi, BASE_DPI};
 use crate::render::{CalendarLayout, CalendarRenderer, CalendarTheme, NavButton};
+use crate::tray::{
+    parse_tray_message, TrayContextMenu, TrayEvent, TrayIcon, TrayMenuCommand, DEFAULT_TRAY_UID,
+    WM_TRAYICON,
+};
 
 const CLASS_NAME: PCWSTR = w!("DesCalCalendarWindowClass");
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -63,6 +67,7 @@ pub struct WindowState {
     pub hovered_nav: Option<NavButton>,
     pub pressed_nav: Option<NavButton>,
     pub wheel_delta_accum: i32,
+    pub should_quit: bool,
 }
 
 impl WindowState {
@@ -93,6 +98,36 @@ impl WindowState {
             0
         }
     }
+
+    /// トレイのコンテキストメニューコマンドを実行する
+    pub fn execute_menu_command(&mut self, hwnd: HWND, cmd: TrayMenuCommand) {
+        match cmd {
+            TrayMenuCommand::ToggleCalendar => unsafe {
+                let visible = IsWindowVisible(hwnd).as_bool();
+                if visible {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                } else {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+            },
+            TrayMenuCommand::GoToday => {
+                self.wheel_delta_accum = 0;
+                self.calendar.go_to_today();
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_SHOW);
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+            }
+            TrayMenuCommand::Exit => {
+                self.should_quit = true;
+                unsafe {
+                    let _ = ShowWindow(hwnd, SW_HIDE);
+                    PostQuitMessage(0);
+                }
+            }
+        }
+    }
 }
 
 /// タスクトレイ連動用カレンダーポップアップウィンドウ
@@ -120,6 +155,7 @@ impl CalendarWindow {
             hovered_nav: None,
             pressed_nav: None,
             wheel_delta_accum: 0,
+            should_quit: false,
         });
 
         // スタイル:
@@ -498,6 +534,21 @@ impl CalendarWindow {
         changed
     }
 
+    /// 終了要求フラグ（メニューの「終了」選択等）が立っているかを取得
+    pub fn should_quit(&self) -> bool {
+        self.state.should_quit
+    }
+
+    /// トレイのコンテキストメニューコマンドを実行する
+    pub fn execute_menu_command(&mut self, cmd: TrayMenuCommand) {
+        self.state.execute_menu_command(self.hwnd, cmd);
+    }
+
+    /// このウィンドウに紐づくシステムトレイアイコンを作成・常駐させる
+    pub fn create_tray_icon(&self, tooltip: &str) -> Result<TrayIcon> {
+        TrayIcon::new(self.hwnd, DEFAULT_TRAY_UID, tooltip)
+    }
+
     /// ウィンドウプロシージャ（メッセージルーティング）
     unsafe extern "system" fn wnd_proc(
         hwnd: HWND,
@@ -630,6 +681,35 @@ impl CalendarWindow {
                             }
                         }
                     }
+                }
+                WM_COMMAND => {
+                    let cmd_id = (wparam.0 & 0xffff) as usize;
+                    if let Some(cmd) = TrayMenuCommand::from_id(cmd_id) {
+                        state.execute_menu_command(hwnd, cmd);
+                        return LRESULT(0);
+                    }
+                }
+                WM_TRAYICON => {
+                    match parse_tray_message(lparam) {
+                        TrayEvent::RightClick => {
+                            let is_vis = IsWindowVisible(hwnd).as_bool();
+                            if let Ok(menu) = TrayContextMenu::new(is_vis) {
+                                if let Some(cmd) = menu.show_at_cursor(hwnd) {
+                                    state.execute_menu_command(hwnd, cmd);
+                                }
+                            }
+                            return LRESULT(0);
+                        }
+                        TrayEvent::LeftClick => {
+                            return LRESULT(0);
+                        }
+                        TrayEvent::Other(_) => {}
+                    }
+                }
+                WM_DESTROY => {
+                    state.should_quit = true;
+                    PostQuitMessage(0);
+                    return LRESULT(0);
                 }
                 _ => {}
             }
@@ -1123,4 +1203,81 @@ mod tests {
         assert_eq!(window.model().view_month, 12);
         assert_eq!(window.wheel_delta_accum(), 30);
     }
+
+    #[test]
+    fn test_tray_menu_commands_and_wm_command() {
+        use crate::tray::{MENU_ID_EXIT, MENU_ID_GO_TODAY, MENU_ID_TOGGLE_CALENDAR};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            PeekMessageW, MSG, PM_REMOVE, WM_QUIT,
+        };
+
+        let config = PopupWindowConfig {
+            title: "DesCal Tray Command Test",
+            width: 320,
+            height: 360,
+            initial_x: 0,
+            initial_y: 0,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        assert!(!window.is_visible());
+        assert!(!window.should_quit());
+
+        // 1. MENU_ID_TOGGLE_CALENDAR 送信 -> 非表示から表示へ切り替わること
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_COMMAND,
+                Some(WPARAM(MENU_ID_TOGGLE_CALENDAR)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert!(window.is_visible());
+
+        // 2. 再度 MENU_ID_TOGGLE_CALENDAR 送信 -> 表示から非表示へ切り替わること
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_COMMAND,
+                Some(WPARAM(MENU_ID_TOGGLE_CALENDAR)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert!(!window.is_visible());
+
+        // 3. 過去の年月を表示中に MENU_ID_GO_TODAY 送信 -> 今日の年月へ戻り、表示されること
+        window.set_date(2020, 3);
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_COMMAND,
+                Some(WPARAM(MENU_ID_GO_TODAY)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert!(window.is_visible());
+        assert_eq!(window.model().view_year, window.model().today.year());
+        assert_eq!(window.model().view_month, window.model().today.month());
+
+        // 4. MENU_ID_EXIT（「終了」）送信 -> should_quit が true になり、非表示化され、WM_QUIT がポストされること
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_COMMAND,
+                Some(WPARAM(MENU_ID_EXIT)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert!(window.should_quit());
+        assert!(!window.is_visible());
+
+        // スレッドキューにポストされた WM_QUIT を確認・回収
+        unsafe {
+            let mut msg = MSG::default();
+            let has_quit = PeekMessageW(&mut msg, None, WM_QUIT, WM_QUIT, PM_REMOVE).as_bool();
+            assert!(has_quit, "WM_QUIT メッセージがポストされていません");
+            assert_eq!(msg.message, WM_QUIT);
+        }
+    }
 }
+
