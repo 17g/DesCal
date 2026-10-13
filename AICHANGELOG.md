@@ -130,4 +130,27 @@
   - `cargo check`: Exit Code 0 (成功, 警告0件)
   - `cargo test`: 24 passed, 0 failed, Exit Code 0 (成功)
 
+## [2026-10-13] Phase 3.2: マウスホイールスクロールによるスムーズな月送り・月戻し機能の実装
+- **Before**:
+  - カレンダーの月移動は前月・今日・翌月ボタンのクリックによる1ヶ月単位の切り替えのみであり、マウスホイールやタッチパッドスクロール（`WM_MOUSEWHEEL`）による月送り・月戻し操作には未対応だった。
+- **After**:
+  - `src/calendar.rs`:
+    - 任意の月数シフト（負の値で過去、正の値で未来）を `div_euclid` / `rem_euclid` で O(1) 計算する `CalendarModel::add_months(&mut self, delta_months: i32)` を実装。
+    - 複数月・年またぎ移動を検証する単体テスト `test_add_months_multi_year` を追加。
+  - `src/window.rs`:
+    - 標準ホイール回転量閾値 `WHEEL_DELTA: i32 = 120` を定義し、`WindowState` に端数蓄積フィールド `wheel_delta_accum: i32` およびスクロール処理メソッド `process_mouse_wheel(&mut self, delta: i16) -> i32` を追加。
+    - 上回転（`delta > 0`）で前月方向、下回転（`delta < 0`）で翌月方向へ移動し、高精度タッチパッド等の細かい端数回転量（`< 120`）の蓄積、高速複数ノッチの一括移動、および逆方向スクロール転換時の端数リセットによる高レスポンス化を実現。
+    - `CalendarWindow` に `handle_mouse_wheel`、`wheel_delta_accum`、`reset_wheel_accum`、`extract_wheel_delta`、`pack_wheel_wparam` を追加し、ボタン操作時にも端数を自動リセットするよう連携。
+    - `wnd_proc` に `WM_MOUSEWHEEL` ハンドラを追加し、月移動発生時に `InvalidateRect` で即座に再描画を実行。
+    - 標準ホイール・複数ノッチ・タッチパッド端数蓄積・方向転換・`SendMessageW(WM_MOUSEWHEEL)` を網羅する単体テスト2件を追加（全27テスト成功）。
+  - `for_agent/GUARDRAILS.md`:
+    - `WM_MOUSEWHEEL` における `zDelta` 抽出と端数蓄積スクロール制御の知見を追記。
+- **変更理由**:
+  - 仕様書（`SPECIFICATIONS.md` 4.3）に基づき、マウスホイールやタッチパッドのスクロール操作によって直感的かつスムーズに前後の月へ移動できるようにするため。
+- **影響範囲**:
+  - カレンダーコアモデル（`src/calendar.rs`）、ウィンドウ管理・イベント処理（`src/window.rs`）、ガードレール（`for_agent/GUARDRAILS.md`）。
+- **検証結果**:
+  - `cargo check`: Exit Code 0 (成功, 警告0件)
+  - `cargo test`: 27 passed, 0 failed, Exit Code 0 (成功)
+
 

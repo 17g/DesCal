@@ -44,4 +44,5 @@
   - `WM_MOUSELEAVE` は定数 `0x02A3` を使用する。
   - `SendMessageW` の `wparam` / `lparam` は windows 0.62 では `Option<WPARAM>` / `Option<LPARAM>` を要求するため、`Some(WPARAM(...))` / `Some(LPARAM(...))` でラップすること。
   - マウスホバー・押下状態（`NavButton`）に応じたUIフィードバック（テーマ色切り替え）と、`WM_SETCURSOR` での `IDC_HAND` カーソル設定を併用することで、ボタンの視認性とクリック操作の直感性を高める。
+  - `WM_MOUSEWHEEL` メッセージにおけるホイール回転量（`zDelta`）は `((wparam.0 >> 16) & 0xffff) as i16` で上位16ビットを符号付き整数として抽出する。高精度タッチパッド等の端数回転量（`< 120`）に対応するため、`wheel_delta_accum` に蓄積して `WHEEL_DELTA (120)` 単位で月送りを行い、逆方向へのスクロール転換時には蓄積値を `0` にリセットすることでスムーズさと即応性を両立させる。
 

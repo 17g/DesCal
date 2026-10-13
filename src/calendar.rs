@@ -39,24 +39,21 @@ impl CalendarModel {
         }
     }
 
+    /// 指定した月数だけ表示月を移動（負の値で過去、正の値で未来）
+    pub fn add_months(&mut self, delta_months: i32) {
+        let total_months = self.view_year * 12 + (self.view_month as i32 - 1) + delta_months;
+        self.view_year = total_months.div_euclid(12);
+        self.view_month = (total_months.rem_euclid(12) + 1) as u32;
+    }
+
     /// 前月に移動
     pub fn prev_month(&mut self) {
-        if self.view_month == 1 {
-            self.view_year -= 1;
-            self.view_month = 12;
-        } else {
-            self.view_month -= 1;
-        }
+        self.add_months(-1);
     }
 
     /// 翌月に移動
     pub fn next_month(&mut self) {
-        if self.view_month == 12 {
-            self.view_year += 1;
-            self.view_month = 1;
-        } else {
-            self.view_month += 1;
-        }
+        self.add_months(1);
     }
 
     /// 現在日時の月へ表示をリセット
@@ -226,5 +223,26 @@ mod tests {
         cal.view_month = cal.today.month();
         assert_eq!(cal.view_year, 2026);
         assert_eq!(cal.view_month, 10);
+    }
+
+    #[test]
+    fn test_add_months_multi_year() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 12).unwrap();
+        let mut cal = CalendarModel::with_date(today, 2026, 10);
+
+        // 5ヶ月進める -> 2027年3月
+        cal.add_months(5);
+        assert_eq!(cal.view_year, 2027);
+        assert_eq!(cal.view_month, 3);
+
+        // 15ヶ月戻す -> 2025年12月
+        cal.add_months(-15);
+        assert_eq!(cal.view_year, 2025);
+        assert_eq!(cal.view_month, 12);
+
+        // 0ヶ月移動 -> 変化なし
+        cal.add_months(0);
+        assert_eq!(cal.view_year, 2025);
+        assert_eq!(cal.view_month, 12);
     }
 }

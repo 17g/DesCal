@@ -19,10 +19,12 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GWL_STYLE, IDC_ARROW, IDC_HAND, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
     WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
+/// 標準マウスホイールの1ノッチあたりの回転量閾値
+pub const WHEEL_DELTA: i32 = 120;
 
 use crate::calendar::CalendarModel;
 use crate::position::{enable_per_monitor_dpi_v2, get_window_dpi, BASE_DPI};
@@ -60,6 +62,37 @@ pub struct WindowState {
     pub dpi: u32,
     pub hovered_nav: Option<NavButton>,
     pub pressed_nav: Option<NavButton>,
+    pub wheel_delta_accum: i32,
+}
+
+impl WindowState {
+    /// マウスホイール回転量（zDelta）を処理し、移動した月数（過去: 負、未来: 正、移動なし: 0）を返す。
+    /// 高精度タッチパッド等の端数回転量（< 120）を蓄積し、逆方向への回転時は端数をリセットして即応性を保つ。
+    pub fn process_mouse_wheel(&mut self, delta: i16) -> i32 {
+        if delta == 0 {
+            return 0;
+        }
+        let delta_i32 = delta as i32;
+        // 前回の蓄積量と逆方向にスクロールされた場合は端数をリセット
+        if (self.wheel_delta_accum > 0 && delta_i32 < 0)
+            || (self.wheel_delta_accum < 0 && delta_i32 > 0)
+        {
+            self.wheel_delta_accum = 0;
+        }
+
+        self.wheel_delta_accum += delta_i32;
+        let steps = self.wheel_delta_accum / WHEEL_DELTA;
+        if steps != 0 {
+            self.wheel_delta_accum %= WHEEL_DELTA;
+            // ホイール上回転（delta > 0, steps > 0）は前月（過去方向: -steps）
+            // ホイール下回転（delta < 0, steps < 0）は翌月（未来方向: -steps）
+            let month_offset = -steps;
+            self.calendar.add_months(month_offset);
+            month_offset
+        } else {
+            0
+        }
+    }
 }
 
 /// タスクトレイ連動用カレンダーポップアップウィンドウ
@@ -86,6 +119,7 @@ impl CalendarWindow {
             dpi: BASE_DPI,
             hovered_nav: None,
             pressed_nav: None,
+            wheel_delta_accum: 0,
         });
 
         // スタイル:
@@ -284,24 +318,28 @@ impl CalendarWindow {
 
     /// 前月に移動して再描画
     pub fn prev_month(&mut self) {
+        self.state.wheel_delta_accum = 0;
         self.state.calendar.prev_month();
         self.refresh();
     }
 
     /// 翌月に移動して再描画
     pub fn next_month(&mut self) {
+        self.state.wheel_delta_accum = 0;
         self.state.calendar.next_month();
         self.refresh();
     }
 
     /// 今日の月に移動して再描画
     pub fn go_to_today(&mut self) {
+        self.state.wheel_delta_accum = 0;
         self.state.calendar.go_to_today();
         self.refresh();
     }
 
     /// 年月を直接指定して再描画
     pub fn set_date(&mut self, year: i32, month: u32) {
+        self.state.wheel_delta_accum = 0;
         self.state.calendar.view_year = year;
         self.state.calendar.view_month = month;
         self.refresh();
@@ -349,6 +387,37 @@ impl CalendarWindow {
     /// 押下中のナビゲーションボタンを取得
     pub fn pressed_nav(&self) -> Option<NavButton> {
         self.state.pressed_nav
+    }
+
+    /// 現在のマウスホイール端数蓄積量を取得
+    pub fn wheel_delta_accum(&self) -> i32 {
+        self.state.wheel_delta_accum
+    }
+
+    /// マウスホイール端数蓄積量をリセット
+    pub fn reset_wheel_accum(&mut self) {
+        self.state.wheel_delta_accum = 0;
+    }
+
+    /// マウスホイールスクロール（WM_MOUSEWHEEL）処理を行い、移動した月数（過去: 負、未来: 正、移動なし: 0）を返す
+    pub fn handle_mouse_wheel(&mut self, delta: i16) -> i32 {
+        let moved = self.state.process_mouse_wheel(delta);
+        if moved != 0 {
+            self.refresh();
+        }
+        moved
+    }
+
+    /// WPARAM からマウスホイール回転量（zDelta: 上位16ビット符号付き整数）を抽出
+    pub fn extract_wheel_delta(wparam: WPARAM) -> i16 {
+        ((wparam.0 >> 16) & 0xffff) as i16
+    }
+
+    /// マウスホイール回転量（zDelta）とキー状態から WM_MOUSEWHEEL 用の WPARAM を構築
+    pub fn pack_wheel_wparam(delta: i16, keys: u16) -> WPARAM {
+        let low = (keys as usize) & 0xffff;
+        let high = ((delta as u16 as usize) & 0xffff) << 16;
+        WPARAM(low | high)
     }
 
     /// 指定座標に対するマウスクリック処理を行い、発火したアクションを返す
@@ -480,12 +549,15 @@ impl CalendarWindow {
                     state.pressed_nav = hit;
                     match hit {
                         Some(NavButton::Prev) => {
+                            state.wheel_delta_accum = 0;
                             state.calendar.prev_month();
                         }
                         Some(NavButton::Today) => {
+                            state.wheel_delta_accum = 0;
                             state.calendar.go_to_today();
                         }
                         Some(NavButton::Next) => {
+                            state.wheel_delta_accum = 0;
                             state.calendar.next_month();
                         }
                         None => {}
@@ -529,6 +601,14 @@ impl CalendarWindow {
                     if state.hovered_nav.is_some() || state.pressed_nav.is_some() {
                         state.hovered_nav = None;
                         state.pressed_nav = None;
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                    return LRESULT(0);
+                }
+                WM_MOUSEWHEEL => {
+                    let delta = Self::extract_wheel_delta(wparam);
+                    let moved = state.process_mouse_wheel(delta);
+                    if moved != 0 {
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                     return LRESULT(0);
@@ -927,5 +1007,120 @@ mod tests {
             );
         }
         assert_eq!(window.hovered_nav(), None);
+    }
+
+    #[test]
+    fn test_mouse_wheel_standard_and_smooth_scroll() {
+        let config = PopupWindowConfig {
+            title: "DesCal Mouse Wheel Test",
+            width: 320,
+            height: 360,
+            initial_x: 0,
+            initial_y: 0,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        window.set_date(2026, 10);
+
+        // 1. 標準ホイール上回転 (+120) -> 前月 (2026年9月)
+        let moved = window.handle_mouse_wheel(120);
+        assert_eq!(moved, -1);
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 9);
+        assert_eq!(window.wheel_delta_accum(), 0);
+
+        // 2. 標準ホイール下回転 (-120) -> 翌月 (2026年10月)
+        let moved = window.handle_mouse_wheel(-120);
+        assert_eq!(moved, 1);
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 10);
+        assert_eq!(window.wheel_delta_accum(), 0);
+
+        // 3. 複数ノッチ一括回転 (-360 = 3ノッチ下回転) -> 3ヶ月先 (2027年1月)
+        let moved = window.handle_mouse_wheel(-360);
+        assert_eq!(moved, 3);
+        assert_eq!(window.model().view_year, 2027);
+        assert_eq!(window.model().view_month, 1);
+
+        // 4. 高精度タッチパッド等の細かい端数スクロール (+40 × 3回 = +120)
+        assert_eq!(window.handle_mouse_wheel(40), 0);
+        assert_eq!(window.wheel_delta_accum(), 40);
+        assert_eq!(window.model().view_month, 1);
+
+        assert_eq!(window.handle_mouse_wheel(40), 0);
+        assert_eq!(window.wheel_delta_accum(), 80);
+        assert_eq!(window.model().view_month, 1);
+
+        assert_eq!(window.handle_mouse_wheel(40), -1);
+        assert_eq!(window.wheel_delta_accum(), 0);
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 12);
+
+        // 5. 端数蓄積中に逆方向へスクロールした場合、端数がリセットされて即応すること
+        assert_eq!(window.handle_mouse_wheel(60), 0);
+        assert_eq!(window.wheel_delta_accum(), 60);
+        // 逆方向へ 1ノッチ (-120) -> 60 がキャンセルされ即座に翌月 (2027年1月) へ移動
+        assert_eq!(window.handle_mouse_wheel(-120), 1);
+        assert_eq!(window.wheel_delta_accum(), 0);
+        assert_eq!(window.model().view_year, 2027);
+        assert_eq!(window.model().view_month, 1);
+    }
+
+    #[test]
+    fn test_window_proc_mouse_wheel_messages() {
+        let config = PopupWindowConfig {
+            title: "DesCal WndProc Wheel Test",
+            width: 320,
+            height: 360,
+            initial_x: 0,
+            initial_y: 0,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        window.set_date(2026, 1);
+
+        // WPARAM パック・抽出ヘルパーの検証
+        let wp_up = CalendarWindow::pack_wheel_wparam(120, 0);
+        assert_eq!(CalendarWindow::extract_wheel_delta(wp_up), 120);
+
+        let wp_down = CalendarWindow::pack_wheel_wparam(-120, 0);
+        assert_eq!(CalendarWindow::extract_wheel_delta(wp_down), -120);
+
+        // WM_MOUSEWHEEL (上回転 +120) 送信 -> 2025年12月へ移動
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_MOUSEWHEEL,
+                Some(wp_up),
+                Some(LPARAM(0)),
+            );
+        }
+        assert_eq!(window.model().view_year, 2025);
+        assert_eq!(window.model().view_month, 12);
+
+        // WM_MOUSEWHEEL (下回転 -120) 送信 -> 2026年1月へ移動
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_MOUSEWHEEL,
+                Some(wp_down),
+                Some(LPARAM(0)),
+            );
+        }
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 1);
+
+        // 端数 (+50, +50, +50 = +150) を WM_MOUSEWHEEL で連続送信 -> 3回目で前月 (2025年12月) へ移動し、余り 30 が残る
+        let wp_partial = CalendarWindow::pack_wheel_wparam(50, 0);
+        unsafe {
+            let _ = SendMessageW(window.hwnd(), WM_MOUSEWHEEL, Some(wp_partial), Some(LPARAM(0)));
+            assert_eq!(window.model().view_month, 1);
+            let _ = SendMessageW(window.hwnd(), WM_MOUSEWHEEL, Some(wp_partial), Some(LPARAM(0)));
+            assert_eq!(window.model().view_month, 1);
+            let _ = SendMessageW(window.hwnd(), WM_MOUSEWHEEL, Some(wp_partial), Some(LPARAM(0)));
+        }
+        assert_eq!(window.model().view_year, 2025);
+        assert_eq!(window.model().view_month, 12);
+        assert_eq!(window.wheel_delta_accum(), 30);
     }
 }
