@@ -25,5 +25,5 @@
 - [x] 4.3 ポップアップ外クリック時（フォーカス喪失 `WM_KILLFOCUS` / Deactivate）の自動非表示ロジックの実装
 
 ## Phase 5: UIブラッシュアップ・品質検証と統合テスト (Refinement & Acceptance Verification)
-- [ ] 5.1 Windows 11調のモダンUIスタイル調整（角丸、配色、ホバー効果、フォント設定）
+- [x] 5.1 Windows 11調のモダンUIスタイル調整（角丸、配色、ホバー効果、フォント設定）
 - [ ] 5.2 全体ビルド（`cargo check` / `cargo test` / `cargo build`）および完成基準（Acceptance Criteria）の網羅的検証

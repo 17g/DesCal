@@ -217,8 +217,35 @@
 - **影響範囲**:
   - ウィンドウ管理・フォーカス制御（`src/window.rs`）、トレイテスト（`src/tray.rs`）、ガードレール（`for_agent/GUARDRAILS.md`）。
 - **検証結果**:
+## [2026-10-13] Phase 5.1: Windows 11調のモダンUIスタイル調整（角丸、配色、ホバー効果、フォント設定）
+- **Before**:
+  - `CalendarTheme` の外枠ボーダー色（`border_color`）は定義されていたもののダブルバッファリング描画で使われておらず、暗い背景上でポップアップウィンドウの境界が不明瞭だった。
+  - カレンダーグリッドの日付セル（42マス）にマウスを乗せてもホバー効果がなく、当日セル以外では視覚的フィードバックが存在しなかった。
+  - フォントはレガシーな `Segoe UI` 指定であり、Windows 11 の Fluent UI 標準である `Segoe UI Variable Text` の優先利用やセミボールド（600）のタイポグラフィ調整が行われていなかった。
+- **After**:
+  - `src/render.rs`:
+    - `CalendarTheme` にセルホバー色（`cell_hover_bg = #303030`, `cell_hover_border = #444444`）および「今日」セルホバー色（`today_hover_bg = #1889E2`）を追加し、ダークモードのコントラストと配色を Windows 11 Fluent Design に統一調整。
+    - フォントフェイスに Windows 11 標準の `Segoe UI Variable Text` を優先指定し、年月タイトルに `FW_SEMIBOLD`（600）を適用。GDI自動フォールバックにより旧環境でも安全に `Segoe UI` で描画。
+    - `CalendarRenderer::paint` に 1px の角丸ウィンドウ外枠境界線（`theme.border_color = #3A3A3A`）描画処理を組み込み、DWM角丸（`DWMWCP_ROUND`）と調和するモダンな外観を実現。
+    - カレンダーグリッド描画（`draw_calendar_grid`）に `hovered_cell: Option<usize>` を導入。各日付セルにマウスが乗った際の角丸ホバー矩形（`RoundRect`）および「今日」セルのホバーハイライトを美しく動的描画。
+    - ナビゲーションボタン（`<`, `今日`, `>`）のホバー/押下時の文字色を純白（#FFFFFF）へハイライト。
+  - `src/window.rs`:
+    - `WindowState` に `hovered_cell: Option<usize>` を追加し、非表示時や離脱時に自動リセット。
+    - `CalendarWindow` にアクセサ `hovered_cell()` を追加し、`handle_mouse_move` および `handle_mouse_leave` で日付セルのホバー状態を同期・差分再描画（`refresh`）。
+    - `wnd_proc` の `WM_PAINT`、`WM_MOUSEMOVE`、`WM_MOUSELEAVE` を更新し、リアルタイムなセルホバーフィードバックとクリーンアップを連携。
+  - テストの拡充:
+    - `render.rs`: `test_theme_defaults` の追加、およびセルホバー状態（通常日セル・当日セル）のヘッドレス描画検証。
+    - `window.rs`: `test_mouse_hover_and_press_states` および `test_window_proc_mouse_messages` におけるセルホバー検知・リセットのテストケース追加（全41テストすべて成功）。
+  - `for_agent/GUARDRAILS.md`:
+    - Windows 11調モダンUIスタイル調整（角丸・配色・ホバー効果・可変フォント）に関する知見・手順を記録。
+- **変更理由**:
+  - 仕様書（`SPECIFICATIONS.md` 1, 5, 8.3）に基づき、Windows 11のUIデザインに調和する洗練されたシンプルで美しいモダンUI（角丸、配色、ホバー効果、可変フォント、1pxボーダー）を実現するため。
+- **影響範囲**:
+  - カレンダー描画エンジン（`src/render.rs`）、ウィンドウ管理・イベント処理（`src/window.rs`）、ガードレール（`for_agent/GUARDRAILS.md`）。
+- **検証結果**:
   - `cargo check`: Exit Code 0 (成功, 警告0件)
-  - `cargo test`: 40 passed, 0 failed, Exit Code 0 (成功)
+  - `cargo test`: 41 passed, 0 failed, Exit Code 0 (成功)
   - `cargo build`: Exit Code 0 (成功)
+
 
 

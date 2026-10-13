@@ -72,6 +72,7 @@ pub struct WindowState {
     pub base_margin: i32,
     pub hovered_nav: Option<NavButton>,
     pub pressed_nav: Option<NavButton>,
+    pub hovered_cell: Option<usize>,
     pub wheel_delta_accum: i32,
     pub should_quit: bool,
     pub auto_hide_on_deactivate: bool,
@@ -171,6 +172,7 @@ impl WindowState {
         }
         self.hovered_nav = None;
         self.pressed_nav = None;
+        self.hovered_cell = None;
     }
 
     /// 非アクティブ化（WM_ACTIVATE / WA_INACTIVE）時の自動非表示ハンドラ。
@@ -241,6 +243,7 @@ impl CalendarWindow {
             base_margin: DEFAULT_BASE_MARGIN,
             hovered_nav: None,
             pressed_nav: None,
+            hovered_cell: None,
             wheel_delta_accum: 0,
             should_quit: false,
             auto_hide_on_deactivate: config.auto_hide_on_deactivate,
@@ -546,6 +549,11 @@ impl CalendarWindow {
         self.state.pressed_nav
     }
 
+    /// ホバー中のカレンダーセルインデックスを取得
+    pub fn hovered_cell(&self) -> Option<usize> {
+        self.state.hovered_cell
+    }
+
     /// 現在のマウスホイール端数蓄積量を取得
     pub fn wheel_delta_accum(&self) -> i32 {
         self.state.wheel_delta_accum
@@ -634,22 +642,34 @@ impl CalendarWindow {
     pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> bool {
         let layout = self.layout();
         let pt = POINT { x, y };
-        let hit = layout.hit_test_nav_button(pt);
-        if self.state.hovered_nav != hit {
-            self.state.hovered_nav = hit;
-            self.refresh();
-            true
-        } else {
-            false
+        let hit_nav = layout.hit_test_nav_button(pt);
+        let hit_cell = layout.hit_test_cell(pt);
+        let mut changed = false;
+
+        if self.state.hovered_nav != hit_nav {
+            self.state.hovered_nav = hit_nav;
+            changed = true;
         }
+        if self.state.hovered_cell != hit_cell {
+            self.state.hovered_cell = hit_cell;
+            changed = true;
+        }
+
+        if changed {
+            self.refresh();
+        }
+        changed
     }
 
     /// マウス離脱（WM_MOUSELEAVE）処理
     pub fn handle_mouse_leave(&mut self) -> bool {
-        let changed = self.state.hovered_nav.is_some() || self.state.pressed_nav.is_some();
+        let changed = self.state.hovered_nav.is_some()
+            || self.state.pressed_nav.is_some()
+            || self.state.hovered_cell.is_some();
         if changed {
             self.state.hovered_nav = None;
             self.state.pressed_nav = None;
+            self.state.hovered_cell = None;
             self.refresh();
         }
         changed
@@ -725,6 +745,7 @@ impl CalendarWindow {
                         &state.theme,
                         state.hovered_nav,
                         state.pressed_nav,
+                        state.hovered_cell,
                     );
 
                     let _ = EndPaint(hwnd, &ps);
@@ -781,9 +802,20 @@ impl CalendarWindow {
 
                     let layout = CalendarLayout::calculate(width, height, state.dpi);
                     let pt = POINT { x, y };
-                    let hit = layout.hit_test_nav_button(pt);
-                    if state.hovered_nav != hit {
-                        state.hovered_nav = hit;
+                    let hit_nav = layout.hit_test_nav_button(pt);
+                    let hit_cell = layout.hit_test_cell(pt);
+                    let mut changed = false;
+
+                    if state.hovered_nav != hit_nav {
+                        state.hovered_nav = hit_nav;
+                        changed = true;
+                    }
+                    if state.hovered_cell != hit_cell {
+                        state.hovered_cell = hit_cell;
+                        changed = true;
+                    }
+
+                    if changed {
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
 
@@ -797,9 +829,10 @@ impl CalendarWindow {
                     return LRESULT(0);
                 }
                 WM_MOUSELEAVE => {
-                    if state.hovered_nav.is_some() || state.pressed_nav.is_some() {
+                    if state.hovered_nav.is_some() || state.pressed_nav.is_some() || state.hovered_cell.is_some() {
                         state.hovered_nav = None;
                         state.pressed_nav = None;
+                        state.hovered_cell = None;
                         let _ = InvalidateRect(Some(hwnd), None, false);
                     }
                     return LRESULT(0);
@@ -1136,12 +1169,14 @@ mod tests {
 
         // 初期状態はホバーなし
         assert_eq!(window.hovered_nav(), None);
+        assert_eq!(window.hovered_cell(), None);
         assert_eq!(window.pressed_nav(), None);
 
         // Prev ボタンへマウス移動
         let changed = window.handle_mouse_move(prev_pt.x, prev_pt.y);
         assert!(changed);
         assert_eq!(window.hovered_nav(), Some(NavButton::Prev));
+        assert_eq!(window.hovered_cell(), None);
 
         // 同一ボタン上での再移動 -> 変化なし
         let changed = window.handle_mouse_move(prev_pt.x, prev_pt.y);
@@ -1151,6 +1186,7 @@ mod tests {
         let changed = window.handle_mouse_move(today_pt.x, today_pt.y);
         assert!(changed);
         assert_eq!(window.hovered_nav(), Some(NavButton::Today));
+        assert_eq!(window.hovered_cell(), None);
 
         // ボタン押下
         let hit = window.handle_lbutton_down(today_pt.x, today_pt.y);
@@ -1162,10 +1198,21 @@ mod tests {
         assert!(released);
         assert_eq!(window.pressed_nav(), None);
 
+        // カレンダー日付セル（セル14）へマウス移動
+        let cell_14_pt = POINT {
+            x: (layout.cell_rects[14].left + layout.cell_rects[14].right) / 2,
+            y: (layout.cell_rects[14].top + layout.cell_rects[14].bottom) / 2,
+        };
+        let changed = window.handle_mouse_move(cell_14_pt.x, cell_14_pt.y);
+        assert!(changed);
+        assert_eq!(window.hovered_nav(), None);
+        assert_eq!(window.hovered_cell(), Some(14));
+
         // ウィンドウ外離脱
         let left = window.handle_mouse_leave();
         assert!(left);
         assert_eq!(window.hovered_nav(), None);
+        assert_eq!(window.hovered_cell(), None);
         assert_eq!(window.pressed_nav(), None);
     }
 
@@ -1196,6 +1243,10 @@ mod tests {
         let next_pt = POINT {
             x: (layout.next_btn_rect.left + layout.next_btn_rect.right) / 2,
             y: (layout.next_btn_rect.top + layout.next_btn_rect.bottom) / 2,
+        };
+        let cell_20_pt = POINT {
+            x: (layout.cell_rects[20].left + layout.cell_rects[20].right) / 2,
+            y: (layout.cell_rects[20].top + layout.cell_rects[20].bottom) / 2,
         };
 
         // WM_LBUTTONDOWN メッセージを Prev ボタン座標へ送信
@@ -1233,7 +1284,7 @@ mod tests {
         assert_eq!(window.model().view_year, 2026);
         assert_eq!(window.model().view_month, 5);
 
-        // WM_MOUSEMOVE メッセージ送信
+        // WM_MOUSEMOVE メッセージ送信 (Nextボタン)
         unsafe {
             let _ = SendMessageW(
                 window.hwnd(),
@@ -1243,6 +1294,19 @@ mod tests {
             );
         }
         assert_eq!(window.hovered_nav(), Some(NavButton::Next));
+        assert_eq!(window.hovered_cell(), None);
+
+        // WM_MOUSEMOVE メッセージ送信 (セル20)
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_MOUSEMOVE,
+                Some(WPARAM(0)),
+                Some(make_lparam(cell_20_pt)),
+            );
+        }
+        assert_eq!(window.hovered_nav(), None);
+        assert_eq!(window.hovered_cell(), Some(20));
 
         // WM_MOUSELEAVE メッセージ送信
         unsafe {
@@ -1254,6 +1318,7 @@ mod tests {
             );
         }
         assert_eq!(window.hovered_nav(), None);
+        assert_eq!(window.hovered_cell(), None);
     }
 
     #[test]
