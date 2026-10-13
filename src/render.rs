@@ -12,6 +12,14 @@ use windows::Win32::Graphics::Gdi::{
 use crate::calendar::{CalendarCell, CalendarModel};
 use crate::position::scale_value;
 
+/// ナビゲーションボタンの種類
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavButton {
+    Prev,
+    Today,
+    Next,
+}
+
 /// RGB値をCOLORREF型へ変換するヘルパー関数
 pub const fn rgb(r: u8, g: u8, b: u8) -> COLORREF {
     COLORREF((r as u32) | ((g as u32) << 8) | ((b as u32) << 16))
@@ -28,8 +36,14 @@ pub struct CalendarTheme {
     pub header_text_color: COLORREF,
     /// ナビゲーションボタン背景色 (#2C2C2C)
     pub btn_bg_color: COLORREF,
+    /// ナビゲーションボタンホバー時背景色 (#383838)
+    pub btn_hover_bg_color: COLORREF,
+    /// ナビゲーションボタン押下時背景色 (#242424)
+    pub btn_pressed_bg_color: COLORREF,
     /// ナビゲーションボタン枠線色 (#3D3D3D)
     pub btn_border_color: COLORREF,
+    /// ナビゲーションボタンホバー時枠線色 (#4F4F4F)
+    pub btn_hover_border_color: COLORREF,
     /// ナビゲーションボタン文字色 (#D0D0D0)
     pub btn_text_color: COLORREF,
     /// 通常の曜日文字色 (月〜金: #A0A0A0)
@@ -55,7 +69,10 @@ impl Default for CalendarTheme {
             border_color: rgb(56, 56, 56),
             header_text_color: rgb(255, 255, 255),
             btn_bg_color: rgb(44, 44, 44),
+            btn_hover_bg_color: rgb(56, 56, 56),
+            btn_pressed_bg_color: rgb(36, 36, 36),
             btn_border_color: rgb(62, 62, 62),
+            btn_hover_border_color: rgb(79, 79, 79),
             btn_text_color: rgb(215, 215, 215),
             weekday_text_color: rgb(165, 165, 165),
             weekday_sun_color: rgb(255, 107, 107),
@@ -231,6 +248,19 @@ impl CalendarLayout {
         Self::contains(&self.today_btn_rect, pt)
     }
 
+    /// 指定座標がどのナビゲーションボタン上にあるかを判定
+    pub fn hit_test_nav_button(&self, pt: POINT) -> Option<NavButton> {
+        if self.hit_test_prev(pt) {
+            Some(NavButton::Prev)
+        } else if self.hit_test_today(pt) {
+            Some(NavButton::Today)
+        } else if self.hit_test_next(pt) {
+            Some(NavButton::Next)
+        } else {
+            None
+        }
+    }
+
     pub fn hit_test_cell(&self, pt: POINT) -> Option<usize> {
         for (i, cell) in self.cell_rects.iter().enumerate() {
             if Self::contains(cell, pt) {
@@ -318,6 +348,8 @@ impl CalendarRenderer {
         dpi: u32,
         model: &CalendarModel,
         theme: &CalendarTheme,
+        hovered_nav: Option<NavButton>,
+        pressed_nav: Option<NavButton>,
     ) {
         if width <= 0 || height <= 0 {
             return;
@@ -355,7 +387,17 @@ impl CalendarRenderer {
         let today_font = create_gdi_font(-scale_value(13, dpi), FW_BOLD.0 as i32, font_face);
 
         // 3. ヘッダー部の描画 (タイトル & ナビゲーションボタン)
-        Self::draw_header(mem_dc, &layout, model, theme, dpi, &title_font.0, &btn_font.0);
+        Self::draw_header(
+            mem_dc,
+            &layout,
+            model,
+            theme,
+            dpi,
+            &title_font.0,
+            &btn_font.0,
+            hovered_nav,
+            pressed_nav,
+        );
 
         // 4. 曜日行の描画 (日, 月, 火, 水, 木, 金, 土)
         Self::draw_weekdays(mem_dc, &layout, theme, &weekday_font.0);
@@ -386,6 +428,8 @@ impl CalendarRenderer {
         dpi: u32,
         title_font: &HFONT,
         btn_font: &HFONT,
+        hovered_nav: Option<NavButton>,
+        pressed_nav: Option<NavButton>,
     ) {
         // 年月タイトル
         {
@@ -408,10 +452,19 @@ impl CalendarRenderer {
 
         // ナビゲーションボタン (前月 "<" / 今日 "今日" / 翌月 ">")
         let corner = scale_value(6, dpi);
-        let btn_pen = AutoDeleteGdi(unsafe { CreatePen(PS_SOLID, 1, theme.btn_border_color) });
-        let btn_brush = AutoDeleteGdi(unsafe { CreateSolidBrush(theme.btn_bg_color) });
 
-        let draw_btn = |rect: &RECT, text: &str| {
+        let draw_btn = |rect: &RECT, text: &str, btn_type: NavButton| {
+            let (bg_color, border_color) = if pressed_nav == Some(btn_type) {
+                (theme.btn_pressed_bg_color, theme.btn_hover_border_color)
+            } else if hovered_nav == Some(btn_type) {
+                (theme.btn_hover_bg_color, theme.btn_hover_border_color)
+            } else {
+                (theme.btn_bg_color, theme.btn_border_color)
+            };
+
+            let btn_pen = AutoDeleteGdi(unsafe { CreatePen(PS_SOLID, 1, border_color) });
+            let btn_brush = AutoDeleteGdi(unsafe { CreateSolidBrush(bg_color) });
+
             let _sel_pen = AutoSelectObject::select(hdc, btn_pen.0);
             let _sel_brush = AutoSelectObject::select(hdc, btn_brush.0);
             unsafe {
@@ -442,9 +495,9 @@ impl CalendarRenderer {
             }
         };
 
-        draw_btn(&layout.prev_btn_rect, "<");
-        draw_btn(&layout.today_btn_rect, "今日");
-        draw_btn(&layout.next_btn_rect, ">");
+        draw_btn(&layout.prev_btn_rect, "<", NavButton::Prev);
+        draw_btn(&layout.today_btn_rect, "今日", NavButton::Today);
+        draw_btn(&layout.next_btn_rect, ">", NavButton::Next);
     }
 
     /// 曜日行描画
@@ -648,6 +701,7 @@ mod tests {
         assert!(layout.hit_test_prev(prev_center));
         assert!(!layout.hit_test_next(prev_center));
         assert!(!layout.hit_test_today(prev_center));
+        assert_eq!(layout.hit_test_nav_button(prev_center), Some(NavButton::Prev));
 
         // Todayボタン中心のヒットテスト
         let today_center = POINT {
@@ -655,6 +709,7 @@ mod tests {
             y: (layout.today_btn_rect.top + layout.today_btn_rect.bottom) / 2,
         };
         assert!(layout.hit_test_today(today_center));
+        assert_eq!(layout.hit_test_nav_button(today_center), Some(NavButton::Today));
 
         // Nextボタン中心のヒットテスト
         let next_center = POINT {
@@ -662,6 +717,7 @@ mod tests {
             y: (layout.next_btn_rect.top + layout.next_btn_rect.bottom) / 2,
         };
         assert!(layout.hit_test_next(next_center));
+        assert_eq!(layout.hit_test_nav_button(next_center), Some(NavButton::Next));
 
         // セル[10]中心のヒットテスト
         let cell_center = POINT {
@@ -669,11 +725,13 @@ mod tests {
             y: (layout.cell_rects[10].top + layout.cell_rects[10].bottom) / 2,
         };
         assert_eq!(layout.hit_test_cell(cell_center), Some(10));
+        assert_eq!(layout.hit_test_nav_button(cell_center), None);
 
         // 画面外の点
         let outside = POINT { x: -10, y: -10 };
         assert_eq!(layout.hit_test_cell(outside), None);
         assert!(!layout.hit_test_prev(outside));
+        assert_eq!(layout.hit_test_nav_button(outside), None);
     }
 
     #[test]
@@ -686,11 +744,42 @@ mod tests {
         let model = CalendarModel::with_date(today, 2026, 10);
         let theme = CalendarTheme::default();
 
-        // 96 DPI での描画実行（クラッシュ・リソースリークがないことを検証）
-        CalendarRenderer::paint(hdc, 320, 360, 96, &model, &theme);
+        // 通常状態での描画実行（96 DPI）
+        CalendarRenderer::paint(hdc, 320, 360, 96, &model, &theme, None, None);
+
+        // ホバー状態（Prevボタンホバー）および押下状態（Todayボタン押下）での描画実行
+        CalendarRenderer::paint(
+            hdc,
+            320,
+            360,
+            96,
+            &model,
+            &theme,
+            Some(NavButton::Prev),
+            None,
+        );
+        CalendarRenderer::paint(
+            hdc,
+            320,
+            360,
+            96,
+            &model,
+            &theme,
+            Some(NavButton::Today),
+            Some(NavButton::Today),
+        );
 
         // 144 DPI (150%) での描画実行
-        CalendarRenderer::paint(hdc, 480, 540, 144, &model, &theme);
+        CalendarRenderer::paint(
+            hdc,
+            480,
+            540,
+            144,
+            &model,
+            &theme,
+            Some(NavButton::Next),
+            None,
+        );
 
         unsafe {
             let _ = ReleaseDC(None, hdc);

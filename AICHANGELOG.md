@@ -97,4 +97,37 @@
   - `cargo check`: Exit Code 0 (成功)
   - `cargo test`: 21 passed, 0 failed, Exit Code 0 (成功)
 
+## [2026-10-13] Phase 3.1: 前月・翌月切り替えボタンのクリックイベントおよび「今日」へジャンプするナビゲーション機能の実装
+- **Before**:
+  - カレンダーUI上に前月("<")・今日("今日")・翌月(">")ボタンが描画されていたが、マウスクリック（`WM_LBUTTONDOWN`）やホバー（`WM_MOUSEMOVE`）のメッセージ処理が行われておらず、ボタンをクリックしても月が切り替わらなかった。
+- **After**:
+  - `src/render.rs`:
+    - ナビゲーションボタン種別を示す列挙型 `NavButton`（`Prev`, `Today`, `Next`）を新設。
+    - `CalendarTheme` にホバー時・押下時の背景色・枠線色（`btn_hover_bg_color`, `btn_pressed_bg_color`, `btn_hover_border_color`）を追加。
+    - `CalendarLayout` に指定座標上のナビゲーションボタンを判定する `hit_test_nav_button` メソッドを追加。
+    - `CalendarRenderer::paint` および `draw_header` を拡張し、ホバー状態・押下状態に応じたボタンの視覚的フィードバック（ハイライト描画）を実装。
+  - `src/window.rs`:
+    - `WindowState` に `hovered_nav: Option<NavButton>` および `pressed_nav: Option<NavButton>` を追加。
+    - `CalendarWindow` にマウスクリック（`handle_mouse_click`）、ボタン押下（`handle_lbutton_down`）、ボタン離脱（`handle_lbutton_up`）、マウス移動（`handle_mouse_move`）、マウスウィンドウ外離脱（`handle_mouse_leave`）メソッドを実装。
+    - `wnd_proc` において以下の Windows メッセージハンドリングを実装：
+      - `WM_LBUTTONDOWN`: ボタン判定・該当ナビゲーション実行（`prev_month()` / `go_to_today()` / `next_month()`）および再描画。
+      - `WM_LBUTTONUP`: 押下状態クリアおよび再描画。
+      - `WM_MOUSEMOVE` & `TrackMouseEvent`: ホバー状態更新、離脱検知要求、再描画。
+      - `WM_MOUSELEAVE`: ホバー・押下状態クリアおよび再描画。
+      - `WM_SETCURSOR`: ボタン領域上にある場合に `IDC_HAND`（手カーソル）を設定。
+  - `Cargo.toml`:
+    - `windows` クレートの features に `Win32_UI_Input_KeyboardAndMouse` および `Win32_UI_Controls` を追加。
+  - テストの拡充:
+    - `test_mouse_navigation_click_events`: Prev/Next/Today クリック時の月送り・ジャンプおよび無効領域クリック時の不変性を検証。
+    - `test_mouse_hover_and_press_states`: マウス移動・押下・離脱時のホバー/押下状態遷移を検証。
+    - `test_window_proc_mouse_messages`: Win32メッセージパイプライン（`SendMessageW`）経由での `WM_LBUTTONDOWN` / `WM_LBUTTONUP` / `WM_MOUSEMOVE` / `WM_MOUSELEAVE` による月切り替えを実機検証。
+    - 全24テストすべてパス（0 failed）。
+- **変更理由**:
+  - ユーザーがカレンダー上の前月・今日・翌月ボタンをクリックして直感的に月送り・今日への復帰を行えるようにし、ホバー・押下フィードバックおよび手カーソル表示によりWindows 11らしい自然なUI操作感を提供するため。
+- **影響範囲**:
+  - カレンダー描画エンジン（`src/render.rs`）、ウィンドウ管理・メッセージ処理（`src/window.rs`）、依存関係（`Cargo.toml`）、ガードレール（`for_agent/GUARDRAILS.md`）。
+- **検証結果**:
+  - `cargo check`: Exit Code 0 (成功, 警告0件)
+  - `cargo test`: 24 passed, 0 failed, Exit Code 0 (成功)
+
 

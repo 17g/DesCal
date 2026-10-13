@@ -39,3 +39,9 @@
   - ウィンドウ再描画時のチラつき（フリッカー）を完全に防止するため、`WM_ERASEBKGND` メッセージで `LRESULT(1)` を返してシステム標準の背景消去を抑制し、`WM_PAINT` 内部で互換DC（`CreateCompatibleDC`）と互換ビットマップ（`CreateCompatibleBitmap`）によるダブルバッファリングを行い、`BitBlt` で一括転送する。
   - GDIオブジェクト（`HBRUSH`, `HPEN`, `HFONT`, `HBITMAP`, メモリ `HDC`）のリークを完全に防止するため、RAIIラッパー（`Drop` 時に `DeleteObject(obj.into())` や `DeleteDC` を呼ぶ構造体）を用い、また `SelectObject` は選択前の旧オブジェクトを保持してスコープ終了時に確実に復元する。
   - `wnd_proc` からウィンドウの内部状態（`CalendarModel`, `CalendarTheme`, DPI等）にアクセスするため `SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr)` を用い、ウィンドウ破棄時（`Drop`）には `SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0)` で登録を解除することで、不正メモリアクセスを防止する。
+- **[2026-10-13] マウスイベント制御と windows 0.62 入力 API**:
+  - `TrackMouseEvent` / `TRACKMOUSEEVENT` / `TME_LEAVE` は `windows::Win32::UI::Input::KeyboardAndMouse` モジュール（Cargo feature: `Win32_UI_Input_KeyboardAndMouse`）に所属している。
+  - `WM_MOUSELEAVE` は定数 `0x02A3` を使用する。
+  - `SendMessageW` の `wparam` / `lparam` は windows 0.62 では `Option<WPARAM>` / `Option<LPARAM>` を要求するため、`Some(WPARAM(...))` / `Some(LPARAM(...))` でラップすること。
+  - マウスホバー・押下状態（`NavButton`）に応じたUIフィードバック（テーマ色切り替え）と、`WM_SETCURSOR` での `IDC_HAND` カーソル設定を併用することで、ボタンの視認性とクリック操作の直感性を高める。
+

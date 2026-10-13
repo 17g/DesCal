@@ -1,24 +1,32 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::core::{w, Error, Result, PCWSTR};
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE, DWM_WINDOW_CORNER_PREFERENCE,
     DWMWCP_ROUND,
 };
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetWindowLongPtrW, IsWindow,
-    IsWindowVisible, LoadCursorW, RegisterClassExW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, GWL_STYLE, IDC_ARROW,
-    SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE,
-    WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
-    WM_ERASEBKGND, WM_PAINT,
+use windows::Win32::Graphics::Gdi::{
+    BeginPaint, EndPaint, InvalidateRect, ScreenToClient, PAINTSTRUCT,
 };
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GetClientRect, GetCursorPos, GetWindowLongPtrW,
+    IsWindow, IsWindowVisible, LoadCursorW, RegisterClassExW, SetCursor, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE,
+    GWL_STYLE, IDC_ARROW, IDC_HAND, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSEXW, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_PAINT, WM_SETCURSOR,
+};
+
+const WM_MOUSELEAVE: u32 = 0x02A3;
 
 use crate::calendar::CalendarModel;
 use crate::position::{enable_per_monitor_dpi_v2, get_window_dpi, BASE_DPI};
-use crate::render::{CalendarLayout, CalendarRenderer, CalendarTheme};
+use crate::render::{CalendarLayout, CalendarRenderer, CalendarTheme, NavButton};
 
 const CLASS_NAME: PCWSTR = w!("DesCalCalendarWindowClass");
 static CLASS_REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -50,6 +58,8 @@ pub struct WindowState {
     pub calendar: CalendarModel,
     pub theme: CalendarTheme,
     pub dpi: u32,
+    pub hovered_nav: Option<NavButton>,
+    pub pressed_nav: Option<NavButton>,
 }
 
 /// タスクトレイ連動用カレンダーポップアップウィンドウ
@@ -74,6 +84,8 @@ impl CalendarWindow {
             calendar: CalendarModel::new(),
             theme: CalendarTheme::default(),
             dpi: BASE_DPI,
+            hovered_nav: None,
+            pressed_nav: None,
         });
 
         // スタイル:
@@ -329,7 +341,95 @@ impl CalendarWindow {
         WINDOW_EX_STYLE(ex_style as u32)
     }
 
-    /// ウィンドウプロシージャ（初期メッセージルーティング）
+    /// ホバー中のナビゲーションボタンを取得
+    pub fn hovered_nav(&self) -> Option<NavButton> {
+        self.state.hovered_nav
+    }
+
+    /// 押下中のナビゲーションボタンを取得
+    pub fn pressed_nav(&self) -> Option<NavButton> {
+        self.state.pressed_nav
+    }
+
+    /// 指定座標に対するマウスクリック処理を行い、発火したアクションを返す
+    pub fn handle_mouse_click(&mut self, x: i32, y: i32) -> Option<NavButton> {
+        let layout = self.layout();
+        let pt = POINT { x, y };
+        let hit = layout.hit_test_nav_button(pt);
+        match hit {
+            Some(NavButton::Prev) => {
+                self.prev_month();
+            }
+            Some(NavButton::Today) => {
+                self.go_to_today();
+            }
+            Some(NavButton::Next) => {
+                self.next_month();
+            }
+            None => {}
+        }
+        hit
+    }
+
+    /// 左マウスボタン押下（WM_LBUTTONDOWN）処理
+    pub fn handle_lbutton_down(&mut self, x: i32, y: i32) -> Option<NavButton> {
+        let layout = self.layout();
+        let pt = POINT { x, y };
+        let hit = layout.hit_test_nav_button(pt);
+        self.state.pressed_nav = hit;
+        match hit {
+            Some(NavButton::Prev) => {
+                self.prev_month();
+            }
+            Some(NavButton::Today) => {
+                self.go_to_today();
+            }
+            Some(NavButton::Next) => {
+                self.next_month();
+            }
+            None => {}
+        }
+        self.refresh();
+        hit
+    }
+
+    /// 左マウスボタン離脱（WM_LBUTTONUP）処理
+    pub fn handle_lbutton_up(&mut self, _x: i32, _y: i32) -> bool {
+        if self.state.pressed_nav.is_some() {
+            self.state.pressed_nav = None;
+            self.refresh();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// マウス移動（WM_MOUSEMOVE）処理
+    pub fn handle_mouse_move(&mut self, x: i32, y: i32) -> bool {
+        let layout = self.layout();
+        let pt = POINT { x, y };
+        let hit = layout.hit_test_nav_button(pt);
+        if self.state.hovered_nav != hit {
+            self.state.hovered_nav = hit;
+            self.refresh();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// マウス離脱（WM_MOUSELEAVE）処理
+    pub fn handle_mouse_leave(&mut self) -> bool {
+        let changed = self.state.hovered_nav.is_some() || self.state.pressed_nav.is_some();
+        if changed {
+            self.state.hovered_nav = None;
+            self.state.pressed_nav = None;
+            self.refresh();
+        }
+        changed
+    }
+
+    /// ウィンドウプロシージャ（メッセージルーティング）
     unsafe extern "system" fn wnd_proc(
         hwnd: HWND,
         msg: u32,
@@ -355,6 +455,8 @@ impl CalendarWindow {
                         state.dpi,
                         &state.calendar,
                         &state.theme,
+                        state.hovered_nav,
+                        state.pressed_nav,
                     );
 
                     let _ = EndPaint(hwnd, &ps);
@@ -363,6 +465,91 @@ impl CalendarWindow {
                 WM_ERASEBKGND => {
                     // チラつき防止のため背景消去はスキップ（CalendarRenderer で一括描画）
                     return LRESULT(1);
+                }
+                WM_LBUTTONDOWN => {
+                    let x = (lparam.0 & 0xffff) as i16 as i32;
+                    let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    let width = rc.right - rc.left;
+                    let height = rc.bottom - rc.top;
+
+                    let layout = CalendarLayout::calculate(width, height, state.dpi);
+                    let pt = POINT { x, y };
+                    let hit = layout.hit_test_nav_button(pt);
+                    state.pressed_nav = hit;
+                    match hit {
+                        Some(NavButton::Prev) => {
+                            state.calendar.prev_month();
+                        }
+                        Some(NavButton::Today) => {
+                            state.calendar.go_to_today();
+                        }
+                        Some(NavButton::Next) => {
+                            state.calendar.next_month();
+                        }
+                        None => {}
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                    return LRESULT(0);
+                }
+                WM_LBUTTONUP => {
+                    if state.pressed_nav.is_some() {
+                        state.pressed_nav = None;
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                    return LRESULT(0);
+                }
+                WM_MOUSEMOVE => {
+                    let x = (lparam.0 & 0xffff) as i16 as i32;
+                    let y = ((lparam.0 >> 16) & 0xffff) as i16 as i32;
+                    let mut rc = RECT::default();
+                    let _ = GetClientRect(hwnd, &mut rc);
+                    let width = rc.right - rc.left;
+                    let height = rc.bottom - rc.top;
+
+                    let layout = CalendarLayout::calculate(width, height, state.dpi);
+                    let pt = POINT { x, y };
+                    let hit = layout.hit_test_nav_button(pt);
+                    if state.hovered_nav != hit {
+                        state.hovered_nav = hit;
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+
+                    let mut tme = TRACKMOUSEEVENT {
+                        cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                        dwFlags: TME_LEAVE,
+                        hwndTrack: hwnd,
+                        dwHoverTime: 0,
+                    };
+                    let _ = TrackMouseEvent(&mut tme);
+                    return LRESULT(0);
+                }
+                WM_MOUSELEAVE => {
+                    if state.hovered_nav.is_some() || state.pressed_nav.is_some() {
+                        state.hovered_nav = None;
+                        state.pressed_nav = None;
+                        let _ = InvalidateRect(Some(hwnd), None, false);
+                    }
+                    return LRESULT(0);
+                }
+                WM_SETCURSOR => {
+                    let mut pt = POINT::default();
+                    if GetCursorPos(&mut pt).is_ok() {
+                        let _ = ScreenToClient(hwnd, &mut pt);
+                        let mut rc = RECT::default();
+                        let _ = GetClientRect(hwnd, &mut rc);
+                        let width = rc.right - rc.left;
+                        let height = rc.bottom - rc.top;
+
+                        let layout = CalendarLayout::calculate(width, height, state.dpi);
+                        if layout.hit_test_nav_button(pt).is_some() {
+                            if let Ok(cursor) = LoadCursorW(None, IDC_HAND) {
+                                SetCursor(Some(cursor));
+                                return LRESULT(1);
+                            }
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -386,6 +573,7 @@ impl Drop for CalendarWindow {
 mod tests {
     use super::*;
     use chrono::Datelike;
+    use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
 
     #[test]
     fn test_create_popup_window_attributes() {
@@ -534,5 +722,210 @@ mod tests {
 
         window.hide();
         assert!(!window.is_visible());
+    }
+
+    #[test]
+    fn test_mouse_navigation_click_events() {
+        let config = PopupWindowConfig {
+            title: "DesCal Mouse Click Test",
+            width: 320,
+            height: 360,
+            initial_x: 0,
+            initial_y: 0,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        window.set_date(2026, 10);
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 10);
+
+        let layout = window.layout();
+
+        // 1. Prev ボタンのクリック -> 2026年9月へ移動
+        let prev_pt = POINT {
+            x: (layout.prev_btn_rect.left + layout.prev_btn_rect.right) / 2,
+            y: (layout.prev_btn_rect.top + layout.prev_btn_rect.bottom) / 2,
+        };
+        let action = window.handle_mouse_click(prev_pt.x, prev_pt.y);
+        assert_eq!(action, Some(NavButton::Prev));
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 9);
+
+        // 2. Next ボタンのクリック -> 2026年10月へ移動
+        let next_pt = POINT {
+            x: (layout.next_btn_rect.left + layout.next_btn_rect.right) / 2,
+            y: (layout.next_btn_rect.top + layout.next_btn_rect.bottom) / 2,
+        };
+        let action = window.handle_mouse_click(next_pt.x, next_pt.y);
+        assert_eq!(action, Some(NavButton::Next));
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 10);
+
+        // 3. もう一度 Next ボタンのクリック -> 2026年11月へ移動
+        let action = window.handle_mouse_click(next_pt.x, next_pt.y);
+        assert_eq!(action, Some(NavButton::Next));
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 11);
+
+        // 4. Today ボタンのクリック -> 今日の年月へジャンプ
+        let today_pt = POINT {
+            x: (layout.today_btn_rect.left + layout.today_btn_rect.right) / 2,
+            y: (layout.today_btn_rect.top + layout.today_btn_rect.bottom) / 2,
+        };
+        let action = window.handle_mouse_click(today_pt.x, today_pt.y);
+        assert_eq!(action, Some(NavButton::Today));
+        assert_eq!(window.model().view_year, window.model().today.year());
+        assert_eq!(window.model().view_month, window.model().today.month());
+
+        // 5. ボタン外（カレンダーグリッドのセル）をクリック -> アクションなし
+        let cell_pt = POINT {
+            x: (layout.cell_rects[15].left + layout.cell_rects[15].right) / 2,
+            y: (layout.cell_rects[15].top + layout.cell_rects[15].bottom) / 2,
+        };
+        let action = window.handle_mouse_click(cell_pt.x, cell_pt.y);
+        assert_eq!(action, None);
+    }
+
+    #[test]
+    fn test_mouse_hover_and_press_states() {
+        let config = PopupWindowConfig {
+            title: "DesCal Hover State Test",
+            width: 320,
+            height: 360,
+            initial_x: 0,
+            initial_y: 0,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        let layout = window.layout();
+
+        let prev_pt = POINT {
+            x: (layout.prev_btn_rect.left + layout.prev_btn_rect.right) / 2,
+            y: (layout.prev_btn_rect.top + layout.prev_btn_rect.bottom) / 2,
+        };
+        let today_pt = POINT {
+            x: (layout.today_btn_rect.left + layout.today_btn_rect.right) / 2,
+            y: (layout.today_btn_rect.top + layout.today_btn_rect.bottom) / 2,
+        };
+
+        // 初期状態はホバーなし
+        assert_eq!(window.hovered_nav(), None);
+        assert_eq!(window.pressed_nav(), None);
+
+        // Prev ボタンへマウス移動
+        let changed = window.handle_mouse_move(prev_pt.x, prev_pt.y);
+        assert!(changed);
+        assert_eq!(window.hovered_nav(), Some(NavButton::Prev));
+
+        // 同一ボタン上での再移動 -> 変化なし
+        let changed = window.handle_mouse_move(prev_pt.x, prev_pt.y);
+        assert!(!changed);
+
+        // Today ボタンへマウス移動
+        let changed = window.handle_mouse_move(today_pt.x, today_pt.y);
+        assert!(changed);
+        assert_eq!(window.hovered_nav(), Some(NavButton::Today));
+
+        // ボタン押下
+        let hit = window.handle_lbutton_down(today_pt.x, today_pt.y);
+        assert_eq!(hit, Some(NavButton::Today));
+        assert_eq!(window.pressed_nav(), Some(NavButton::Today));
+
+        // ボタン離脱
+        let released = window.handle_lbutton_up(today_pt.x, today_pt.y);
+        assert!(released);
+        assert_eq!(window.pressed_nav(), None);
+
+        // ウィンドウ外離脱
+        let left = window.handle_mouse_leave();
+        assert!(left);
+        assert_eq!(window.hovered_nav(), None);
+        assert_eq!(window.pressed_nav(), None);
+    }
+
+    #[test]
+    fn test_window_proc_mouse_messages() {
+        let config = PopupWindowConfig {
+            title: "DesCal WndProc Mouse Test",
+            width: 320,
+            height: 360,
+            initial_x: 0,
+            initial_y: 0,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        window.set_date(2026, 5);
+        let layout = window.layout();
+
+        let make_lparam = |pt: POINT| -> LPARAM {
+            let val = ((pt.x as u32) & 0xffff) | (((pt.y as u32) & 0xffff) << 16);
+            LPARAM(val as isize)
+        };
+
+        let prev_pt = POINT {
+            x: (layout.prev_btn_rect.left + layout.prev_btn_rect.right) / 2,
+            y: (layout.prev_btn_rect.top + layout.prev_btn_rect.bottom) / 2,
+        };
+        let next_pt = POINT {
+            x: (layout.next_btn_rect.left + layout.next_btn_rect.right) / 2,
+            y: (layout.next_btn_rect.top + layout.next_btn_rect.bottom) / 2,
+        };
+
+        // WM_LBUTTONDOWN メッセージを Prev ボタン座標へ送信
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_LBUTTONDOWN,
+                Some(WPARAM(0)),
+                Some(make_lparam(prev_pt)),
+            );
+        }
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 4);
+
+        // WM_LBUTTONUP メッセージ送信
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_LBUTTONUP,
+                Some(WPARAM(0)),
+                Some(make_lparam(prev_pt)),
+            );
+        }
+        assert_eq!(window.pressed_nav(), None);
+
+        // WM_LBUTTONDOWN メッセージを Next ボタン座標へ送信
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_LBUTTONDOWN,
+                Some(WPARAM(0)),
+                Some(make_lparam(next_pt)),
+            );
+        }
+        assert_eq!(window.model().view_year, 2026);
+        assert_eq!(window.model().view_month, 5);
+
+        // WM_MOUSEMOVE メッセージ送信
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_MOUSEMOVE,
+                Some(WPARAM(0)),
+                Some(make_lparam(next_pt)),
+            );
+        }
+        assert_eq!(window.hovered_nav(), Some(NavButton::Next));
+
+        // WM_MOUSELEAVE メッセージ送信
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_MOUSELEAVE,
+                Some(WPARAM(0)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert_eq!(window.hovered_nav(), None);
     }
 }
