@@ -535,6 +535,7 @@ mod tests {
             height: 360,
             initial_x: 0,
             initial_y: 0,
+            auto_hide_on_deactivate: true,
         };
         let window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
 

@@ -18,9 +18,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, CS_DBLCLKS, CS_HREDRAW,
     CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, GWL_STYLE, IDC_ARROW, IDC_HAND, SWP_NOACTIVATE,
     SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOW, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSEXW,
-    WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WM_COMMAND,
-    WM_DESTROY, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT,
-    WM_SETCURSOR,
+    WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WA_INACTIVE,
+    WM_ACTIVATE, WM_COMMAND, WM_DESTROY, WM_ERASEBKGND, WM_KILLFOCUS, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_SETCURSOR,
 };
 
 const WM_MOUSELEAVE: u32 = 0x02A3;
@@ -46,6 +46,7 @@ pub struct PopupWindowConfig {
     pub height: i32,
     pub initial_x: i32,
     pub initial_y: i32,
+    pub auto_hide_on_deactivate: bool,
 }
 
 impl Default for PopupWindowConfig {
@@ -56,6 +57,7 @@ impl Default for PopupWindowConfig {
             height: 360,
             initial_x: 100,
             initial_y: 100,
+            auto_hide_on_deactivate: true,
         }
     }
 }
@@ -72,6 +74,8 @@ pub struct WindowState {
     pub pressed_nav: Option<NavButton>,
     pub wheel_delta_accum: i32,
     pub should_quit: bool,
+    pub auto_hide_on_deactivate: bool,
+    pub last_hide_by_deactivate: Option<std::time::Instant>,
 }
 
 impl WindowState {
@@ -108,8 +112,16 @@ impl WindowState {
         unsafe { IsWindowVisible(hwnd).as_bool() }
     }
 
-    /// カレンダーポップアップの表示・非表示をトグルし、新しい表示状態（表示時: true, 非表示時: false）を返す
+    /// カレンダーポップアップの表示・非表示をトグルし、新しい表示状態（表示時: true, 非表示時: false）を返す。
+    /// 直近（300ms以内）に非アクティブ化によって自動非表示になったばかりの場合は、
+    /// トレイアイコンクリックによる非アクティブ化先行と判定し、再表示せず非表示状態を維持する。
     pub fn toggle_popup(&mut self, hwnd: HWND) -> bool {
+        if let Some(instant) = self.last_hide_by_deactivate.take() {
+            if instant.elapsed() < std::time::Duration::from_millis(300) {
+                return false;
+            }
+        }
+
         if self.is_visible(hwnd) {
             self.hide_popup(hwnd);
             false
@@ -121,6 +133,7 @@ impl WindowState {
 
     /// カレンダーポップアップを表示し、タスクトレイ近傍の最新位置に再配置してアクティブ化する
     pub fn show_popup(&mut self, hwnd: HWND) {
+        self.last_hide_by_deactivate = None;
         self.calendar.refresh_today();
 
         // 最新のカーソル位置・トレイ位置およびDPIに基づいてポップアップ位置を再配置
@@ -158,6 +171,25 @@ impl WindowState {
         }
         self.hovered_nav = None;
         self.pressed_nav = None;
+    }
+
+    /// 非アクティブ化（WM_ACTIVATE / WA_INACTIVE）時の自動非表示ハンドラ。
+    /// auto_hide_on_deactivate が有効かつウィンドウが表示中の場合、ポップアップを非表示にし、
+    /// 非アクティブ化タイムスタンプを記録して true を返す。
+    pub fn on_deactivate(&mut self, hwnd: HWND) -> bool {
+        if self.auto_hide_on_deactivate && self.is_visible(hwnd) {
+            self.hide_popup(hwnd);
+            self.last_hide_by_deactivate = Some(std::time::Instant::now());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// フォーカス喪失（WM_KILLFOCUS）時の自動非表示ハンドラ。
+    /// on_deactivate と同様にポップアップを自動非表示にする。
+    pub fn on_kill_focus(&mut self, hwnd: HWND) -> bool {
+        self.on_deactivate(hwnd)
     }
 
     /// トレイのコンテキストメニューコマンドを実行する
@@ -211,6 +243,8 @@ impl CalendarWindow {
             pressed_nav: None,
             wheel_delta_accum: 0,
             should_quit: false,
+            auto_hide_on_deactivate: config.auto_hide_on_deactivate,
+            last_hide_by_deactivate: None,
         });
 
         // スタイル:
@@ -626,6 +660,33 @@ impl CalendarWindow {
         self.state.should_quit
     }
 
+    /// 非アクティブ時の自動非表示が有効かどうかを取得
+    pub fn auto_hide_on_deactivate(&self) -> bool {
+        self.state.auto_hide_on_deactivate
+    }
+
+    /// 非アクティブ時の自動非表示の有効/無効を設定
+    pub fn set_auto_hide_on_deactivate(&mut self, enabled: bool) {
+        self.state.auto_hide_on_deactivate = enabled;
+    }
+
+    /// 非アクティブ化イベント（WM_ACTIVATE / WA_INACTIVE）を処理
+    pub fn handle_deactivate(&mut self) -> bool {
+        let hwnd = self.hwnd;
+        self.state.on_deactivate(hwnd)
+    }
+
+    /// フォーカス喪失イベント（WM_KILLFOCUS）を処理
+    pub fn handle_kill_focus(&mut self) -> bool {
+        let hwnd = self.hwnd;
+        self.state.on_kill_focus(hwnd)
+    }
+
+    /// 直近の非アクティブ化非表示タイムスタンプを取得
+    pub fn last_hide_by_deactivate(&self) -> Option<std::time::Instant> {
+        self.state.last_hide_by_deactivate
+    }
+
     /// トレイのコンテキストメニューコマンドを実行する
     pub fn execute_menu_command(&mut self, cmd: TrayMenuCommand) {
         self.state.execute_menu_command(self.hwnd, cmd);
@@ -769,6 +830,17 @@ impl CalendarWindow {
                         }
                     }
                 }
+                WM_ACTIVATE => {
+                    let active_state = (wparam.0 & 0xffff) as u32;
+                    if active_state == WA_INACTIVE {
+                        state.on_deactivate(hwnd);
+                        return LRESULT(0);
+                    }
+                }
+                WM_KILLFOCUS => {
+                    state.on_kill_focus(hwnd);
+                    return LRESULT(0);
+                }
                 WM_COMMAND => {
                     let cmd_id = (wparam.0 & 0xffff) as usize;
                     if let Some(cmd) = TrayMenuCommand::from_id(cmd_id) {
@@ -821,7 +893,7 @@ impl Drop for CalendarWindow {
 mod tests {
     use super::*;
     use chrono::Datelike;
-    use windows::Win32::UI::WindowsAndMessaging::SendMessageW;
+    use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WA_ACTIVE};
 
     #[test]
     fn test_create_popup_window_attributes() {
@@ -831,6 +903,7 @@ mod tests {
             height: 350,
             initial_x: 50,
             initial_y: 50,
+            auto_hide_on_deactivate: true,
         };
 
         let window = CalendarWindow::new(&config).expect("ポップアップウィンドウの作成に失敗");
@@ -882,6 +955,7 @@ mod tests {
             height: 360,
             initial_x: 0,
             initial_y: 0,
+            auto_hide_on_deactivate: true,
         };
 
         let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -914,6 +988,7 @@ mod tests {
             height: 360,
             initial_x: 10,
             initial_y: 10,
+            auto_hide_on_deactivate: true,
         };
 
         let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -959,6 +1034,7 @@ mod tests {
             height: 360,
             initial_x: 20,
             initial_y: 20,
+            auto_hide_on_deactivate: true,
         };
 
         let window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -980,6 +1056,7 @@ mod tests {
             height: 360,
             initial_x: 0,
             initial_y: 0,
+            auto_hide_on_deactivate: true,
         };
 
         let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -1042,6 +1119,7 @@ mod tests {
             height: 360,
             initial_x: 0,
             initial_y: 0,
+            auto_hide_on_deactivate: true,
         };
 
         let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -1099,6 +1177,7 @@ mod tests {
             height: 360,
             initial_x: 0,
             initial_y: 0,
+            auto_hide_on_deactivate: true,
         };
 
         let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -1185,6 +1264,7 @@ mod tests {
             height: 360,
             initial_x: 0,
             initial_y: 0,
+            auto_hide_on_deactivate: true,
         };
 
         let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -1242,6 +1322,7 @@ mod tests {
             height: 360,
             initial_x: 0,
             initial_y: 0,
+            auto_hide_on_deactivate: true,
         };
 
         let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -1305,6 +1386,7 @@ mod tests {
             height: 360,
             initial_x: 0,
             initial_y: 0,
+            auto_hide_on_deactivate: true,
         };
 
         let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -1376,6 +1458,7 @@ mod tests {
             height: 360,
             initial_x: 10,
             initial_y: 10,
+            auto_hide_on_deactivate: true,
         };
 
         let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -1410,6 +1493,7 @@ mod tests {
             height: 360,
             initial_x: 20,
             initial_y: 20,
+            auto_hide_on_deactivate: true,
         };
 
         let window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
@@ -1468,6 +1552,198 @@ mod tests {
         assert!(
             !window.is_visible(),
             "トレイアイコンダブルクリック再実行後にカレンダーが非表示になっていません"
+        );
+    }
+
+    #[test]
+    fn test_auto_hide_on_deactivate_and_kill_focus() {
+        let config = PopupWindowConfig {
+            title: "DesCal Auto Hide Test",
+            width: 320,
+            height: 360,
+            initial_x: 20,
+            initial_y: 20,
+            auto_hide_on_deactivate: true,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        assert!(!window.is_visible());
+
+        // 1. 表示状態で handle_deactivate() -> 非表示になり true を返すこと
+        window.show_popup();
+        assert!(window.is_visible());
+        let hidden = window.handle_deactivate();
+        assert!(hidden, "表示中の Deactivate で非表示化される必要があります");
+        assert!(!window.is_visible());
+        assert!(window.last_hide_by_deactivate().is_some());
+
+        // 2. 既に非表示の状態で handle_deactivate() -> 何もせず false を返すこと
+        let hidden = window.handle_deactivate();
+        assert!(!hidden, "既に非表示の場合は false を返す必要があります");
+        assert!(!window.is_visible());
+
+        // 3. 表示状態で handle_kill_focus() -> 非表示になり true を返すこと
+        window.show_popup();
+        assert!(window.is_visible());
+        let hidden = window.handle_kill_focus();
+        assert!(hidden, "表示中の KillFocus で非表示化される必要があります");
+        assert!(!window.is_visible());
+        assert!(window.last_hide_by_deactivate().is_some());
+
+        // 4. show_popup() 呼び出しで last_hide_by_deactivate がリセットされること
+        window.show_popup();
+        assert!(window.last_hide_by_deactivate().is_none());
+    }
+
+    #[test]
+    fn test_auto_hide_toggle_setting() {
+        let config = PopupWindowConfig {
+            title: "DesCal Auto Hide Setting Test",
+            width: 320,
+            height: 360,
+            initial_x: 20,
+            initial_y: 20,
+            auto_hide_on_deactivate: true,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+        assert!(window.auto_hide_on_deactivate());
+
+        // auto_hide_on_deactivate を無効化
+        window.set_auto_hide_on_deactivate(false);
+        assert!(!window.auto_hide_on_deactivate());
+
+        // 表示状態で Deactivate を実行しても非表示にならないこと
+        window.show_popup();
+        assert!(window.is_visible());
+        let hidden = window.handle_deactivate();
+        assert!(!hidden, "auto_hide が無効の場合は非表示化されない必要があります");
+        assert!(window.is_visible());
+
+        // 表示状態で KillFocus を実行しても非表示にならないこと
+        let hidden = window.handle_kill_focus();
+        assert!(!hidden, "auto_hide が無効の場合は非表示化されない必要があります");
+        assert!(window.is_visible());
+
+        // 再度 auto_hide を有効化すると正常に非表示になること
+        window.set_auto_hide_on_deactivate(true);
+        let hidden = window.handle_deactivate();
+        assert!(hidden);
+        assert!(!window.is_visible());
+    }
+
+    #[test]
+    fn test_wnd_proc_wm_activate_and_wm_killfocus_messages() {
+        let config = PopupWindowConfig {
+            title: "DesCal WndProc Auto Hide Test",
+            width: 320,
+            height: 360,
+            initial_x: 20,
+            initial_y: 20,
+            auto_hide_on_deactivate: true,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+
+        // 1. WM_ACTIVATE (WA_INACTIVE) 送信 -> ウィンドウが自動非表示になること
+        window.show_popup();
+        assert!(window.is_visible());
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_ACTIVATE,
+                Some(WPARAM(WA_INACTIVE as usize)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert!(
+            !window.is_visible(),
+            "WM_ACTIVATE(WA_INACTIVE) 受信後にカレンダーが非表示になっていません"
+        );
+
+        // 2. WM_ACTIVATE (WA_ACTIVE) 送信 -> 非表示にならないこと
+        window.show_popup();
+        assert!(window.is_visible());
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_ACTIVATE,
+                Some(WPARAM(WA_ACTIVE as usize)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert!(
+            window.is_visible(),
+            "WM_ACTIVATE(WA_ACTIVE) 受信時にカレンダーが表示されたままである必要があります"
+        );
+
+        // 3. WM_KILLFOCUS 送信 -> ウィンドウが自動非表示になること
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_KILLFOCUS,
+                Some(WPARAM(0)),
+                Some(LPARAM(0)),
+            );
+        }
+        assert!(
+            !window.is_visible(),
+            "WM_KILLFOCUS 受信後にカレンダーが非表示になっていません"
+        );
+    }
+
+    #[test]
+    fn test_tray_left_click_debounce_after_deactivate() {
+        use windows::Win32::UI::WindowsAndMessaging::WM_LBUTTONUP;
+
+        let config = PopupWindowConfig {
+            title: "DesCal Tray Debounce Test",
+            width: 320,
+            height: 360,
+            initial_x: 20,
+            initial_y: 20,
+            auto_hide_on_deactivate: true,
+        };
+
+        let mut window = CalendarWindow::new(&config).expect("ウィンドウ作成失敗");
+
+        // カレンダーを表示
+        window.show_popup();
+        assert!(window.is_visible());
+
+        // ユーザーがトレイアイコンをクリックした際、シェルがフォーカスを奪って Deactivate が先行発生
+        let hidden = window.handle_deactivate();
+        assert!(hidden);
+        assert!(!window.is_visible());
+        assert!(window.last_hide_by_deactivate().is_some());
+
+        // その直後（300ms以内）にトレイ左クリック（WM_TRAYICON）が届いた場合、
+        // 「閉じるためのクリック」と判定して再表示せず、非表示のまま維持すること
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_TRAYICON,
+                Some(WPARAM(DEFAULT_TRAY_UID as usize)),
+                Some(LPARAM(WM_LBUTTONUP as isize)),
+            );
+        }
+        assert!(
+            !window.is_visible(),
+            "Deactivate 直後のトレイ左クリックで再オープンされてはいけません（非表示維持）"
+        );
+
+        // 再度トレイ左クリックを送れば、次は通常通り表示されること
+        unsafe {
+            let _ = SendMessageW(
+                window.hwnd(),
+                WM_TRAYICON,
+                Some(WPARAM(DEFAULT_TRAY_UID as usize)),
+                Some(LPARAM(WM_LBUTTONUP as isize)),
+            );
+        }
+        assert!(
+            window.is_visible(),
+            "直近 Deactivate 抑止後のトレイ左クリックでカレンダーが正常に表示される必要があります"
         );
     }
 }

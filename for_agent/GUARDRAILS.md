@@ -54,5 +54,11 @@
   - ポップアップ表示時は、最新のカーソル位置/トレイ位置およびマルチモニター作業領域・DPIスケーリングを再計算（`calculate_tray_popup_geometry`）して `SetWindowPos` で位置合わせを行い、`ShowWindow(SW_SHOW)` と `SetForegroundWindow(hwnd)` を呼び出して確実に最前面アクティブ状態にすること。最前面アクティブ状態にしないと、以後のポップアップ外クリック検知（フォーカス喪失）が正しく機能しない。
   - ポップアップ表示契機で `CalendarModel::refresh_today()` を呼び出すことで、長時間常駐して日付を跨いだ場合でも常に正しい「今日」がハイライト表示されるように同期する。
   - `GetClientRect` などの Win32 API は `BOOL` ではなく `windows::core::Result<()>` を返すため、`.as_bool()` ではなく `.is_ok()` または `?` で結果を判定すること。
+- **[2026-10-13] ポップアップ外クリック時（フォーカス喪失 `WM_ACTIVATE` / `WM_KILLFOCUS`）の自動非表示とトレイクリックの競合防止（デバウンス）**:
+  - ポップアップウィンドウ外クリックによる自動非表示は、`WM_ACTIVATE`（`LOWORD(wParam) == WA_INACTIVE`）および `WM_KILLFOCUS` を検知して `hide_popup()` を呼び出すことで実現する。
+  - カレンダー表示中にユーザーがトレイアイコンをクリックして閉じようとする際、Windowsシェルがフォーカスを握るため、`WM_TRAYICON (LeftClick)` より先に `WM_ACTIVATE(WA_INACTIVE)` が届いてウィンドウが非表示化される。
+  - 直後に `WM_TRAYICON` が届いた際に単純なトグルを行うと、「非表示だから表示する」と誤判定されて再オープンしてしまい、トレイクリックで閉じられなくなる。
+  - 対策として、非アクティブ化で非表示にしたタイムスタンプ（`last_hide_by_deactivate`）を保持し、300ms以内の直後に届いたトレイ左クリックは「閉じる操作」とみなして再オープンを抑止（非表示を維持）することで、外クリックでのクローズとトレイアイコンクリックでのトグル動作の両立を完全に実現する。
+  - 単体テスト等で自動非表示を一時的に抑制・制御できるよう、`PopupWindowConfig` および `CalendarWindow` に `auto_hide_on_deactivate: bool` の設定プロパティを設ける。
 
 

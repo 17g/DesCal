@@ -199,3 +199,26 @@
   - `cargo check`: Exit Code 0 (成功, 警告0件)
   - `cargo test`: 36 passed, 0 failed, Exit Code 0 (成功)
 
+## [2026-10-13] Phase 4.3: ポップアップ外クリック時（フォーカス喪失 WM_KILLFOCUS / Deactivate）の自動非表示ロジックの実装
+- **Before**:
+  - カレンダーポップアップはトレイアイコンの左クリックやメニュー操作で表示・非表示をトグルできたが、ポップアップ外（デスクトップや他のウィンドウ）をクリックしてフォーカスが外れた場合（`WM_ACTIVATE` / `WM_KILLFOCUS`）に自動で閉じる仕組みがなかった。また、Deactivate時に単純非表示化を行うと、トレイアイコン自身をクリックして閉じようとした際にフォーカス喪失先行により再オープンしてしまう競合問題があった。
+- **After**:
+  - `src/window.rs`:
+    - `PopupWindowConfig` および `WindowState` に `auto_hide_on_deactivate: bool` 設定と非アクティブ化非表示タイムスタンプ `last_hide_by_deactivate: Option<Instant>` を追加。
+    - `WindowState` に非アクティブ化ハンドラ `on_deactivate` およびフォーカス喪失ハンドラ `on_kill_focus` を実装。表示中の場合に自動でポップアップを非表示化（`hide_popup`）しタイムスタンプを記録。
+    - `WindowState::toggle_popup` に直近（300ms以内）Deactivate判定ロジックを実装。トレイアイコンクリックによるDeactivate先行発生時は「閉じる操作」とみなして再オープンを抑止（非表示を維持）し、外クリックでのクローズとトレイアイコンでのトグル動作の両立を実現。
+    - `CalendarWindow` に設定取得・変更API（`auto_hide_on_deactivate`, `set_auto_hide_on_deactivate`）および手動イベント処理API（`handle_deactivate`, `handle_kill_focus`）を追加。
+    - `wnd_proc` に `WM_ACTIVATE`（`LOWORD(wParam) == WA_INACTIVE`）および `WM_KILLFOCUS` のメッセージハンドラを組み込み、ウィンドウ外クリックや非アクティブ化時に即座にカレンダーを自動非表示化。
+    - 自動非表示ライフサイクル、KillFocus、設定無効化時の非表示抑止、`SendMessageW` によるメッセージ処理、およびトレイクリック競合防止（デバウンス）を網羅する4件の単体テスト（`test_auto_hide_on_deactivate_and_kill_focus`, `test_auto_hide_toggle_setting`, `test_wnd_proc_wm_activate_and_wm_killfocus_messages`, `test_tray_left_click_debounce_after_deactivate`）を追加（全40テストすべて成功）。
+  - `for_agent/GUARDRAILS.md`:
+    - ポップアップ外クリック時（フォーカス喪失 `WM_ACTIVATE` / `WM_KILLFOCUS`）の自動非表示処理とトレイ左クリック競合防止（デバウンス制御）に関する設計・実装ガイドラインを追記。
+- **変更理由**:
+  - 仕様書（`SPECIFICATIONS.md` 4.2, 8.5）に基づき、カレンダー表示領域外をクリックした際（フォーカス喪失時）に自動的にポップアップが非表示（クローズ）になり、作業を中断することなく素早く元の作業へ戻れるようにするため。
+- **影響範囲**:
+  - ウィンドウ管理・フォーカス制御（`src/window.rs`）、トレイテスト（`src/tray.rs`）、ガードレール（`for_agent/GUARDRAILS.md`）。
+- **検証結果**:
+  - `cargo check`: Exit Code 0 (成功, 警告0件)
+  - `cargo test`: 40 passed, 0 failed, Exit Code 0 (成功)
+  - `cargo build`: Exit Code 0 (成功)
+
+
