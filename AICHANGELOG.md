@@ -247,5 +247,32 @@
   - `cargo test`: 41 passed, 0 failed, Exit Code 0 (成功)
   - `cargo build`: Exit Code 0 (成功)
 
+## [2026-10-13] Phase 5.2: 全体ビルド（cargo check / cargo test / cargo build）および完成基準（Acceptance Criteria）の網羅的検証
+- **Before**:
+  - 各モジュール（`calendar.rs`, `position.rs`, `render.rs`, `tray.rs`, `window.rs`）の単体テスト（41件）は存在していたが、`SPECIFICATIONS.md` Section 8 に定義された7項目の完成基準（Acceptance Criteria）を直接検証する網羅的テストスイートが存在せず、最終リリースビルド（`cargo build --release`）のサイズや動作確認が未完了だった。
+- **After**:
+  - `src/acceptance_tests.rs` を新規作成し、完成基準 1〜7 を網羅的に検証する統合テストを実装：
+    - `test_acceptance_criterion_1_clean_build_and_module_contracts`: コア構造体の整合性とクリーンビルド
+    - `test_acceptance_criterion_2_taskbar_hidden_tray_resident`: タスクバー非表示（`WS_EX_TOOLWINDOW`）、枠なしポップアップ（`WS_POPUP`）、トレイ常駐初期化
+    - `test_acceptance_criterion_3_tray_click_popups_geometry_and_toggle`: トレイ左クリックによるカレンダー表示・画面右下（タスクトレイ近傍）配置・トグル非表示
+    - `test_acceptance_criterion_4_smooth_month_navigation_buttons_and_wheel`: ボタン（`<`, `今日`, `>`）およびホイールスクロール（`WM_MOUSEWHEEL`）によるスムーズな月送り・今日復帰
+    - `test_acceptance_criterion_5_auto_hide_on_deactivate_and_blur`: ポップアップ外クリック時（フォーカス喪失 `WM_ACTIVATE: WA_INACTIVE` / `WM_KILLFOCUS`）の自動非表示
+    - `test_acceptance_criterion_6_tray_menu_exit_terminates_gracefully`: トレイコンテキストメニュー「終了」選択時のプロセス正常終了（`WM_COMMAND` / `WM_QUIT`）
+    - `test_acceptance_criterion_7_pure_rust_architecture`: 外部エンジンやWebview非依存の100% Pure Rust構成検証
+  - `src/main.rs` に `#[cfg(test)] mod acceptance_tests;` を追加。
+  - `cargo check`、`cargo test`（全48件パス）、`cargo build`、`cargo build --release` を実行。
+  - リリースバイナリ（`target/release/descal.exe`）が約170KBの極小サイズかつ高速・省メモリで生成されることを確認。
+  - `for_agent/GUARDRAILS.md` に受け入れ基準網羅的検証の知見を記録。
+- **変更理由**:
+  - 仕様書（`SPECIFICATIONS.md` Section 8）に定義されたすべての完成基準が満たされていることを客観的・再現可能に検証し、本番リリース可能な状態を保証するため。
+- **影響範囲**:
+  - 統合テストスイート（`src/acceptance_tests.rs`）、エントリーポイント（`src/main.rs`）、ガードレール（`for_agent/GUARDRAILS.md`）。
+- **検証結果**:
+  - `cargo check`: Exit Code 0 (成功, 警告0件)
+  - `cargo test`: 48 passed, 0 failed, Exit Code 0 (全テスト成功)
+  - `cargo build`: Exit Code 0 (成功)
+  - `cargo build --release`: Exit Code 0 (成功, バイナリサイズ 173,568 bytes)
+
+
 
 

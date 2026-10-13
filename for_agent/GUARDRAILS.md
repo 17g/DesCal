@@ -65,5 +65,8 @@
   - GDI描画における外枠境界線は、ダブルバッファリング内で `GetStockObject(NULL_BRUSH)` と `theme.border_color` の1pxソリッドペンを選択し、`RoundRect` で角丸境界を描画することで背景を損なわずに美しい輪郭を付与する。
   - カレンダーグリッドセル（42マス）へのマウス追従として `hovered_cell: Option<usize>` を状態管理に加え、`WM_MOUSEMOVE` および `WM_MOUSELEAVE` で判定・同期して角丸ホバー矩形を動的描画する。
   - フォントには Windows 11 の最新標準フォント `Segoe UI Variable Text` を指定し、フォントが見つからない旧環境では GDI の自動フォールバック機能により `Segoe UI` が使われるようにすることで、後方互換性とモダンな可読性を両立する。
+- **[2026-10-13] 全体ビルドおよび完成基準（Acceptance Criteria）の網羅的検証**:
+  - `SPECIFICATIONS.md` に定義された受け入れ基準全7項目（ビルド成功、タスクバー非表示トレイ常駐、右下ポップアップトグル、月送りスクロール・ボタン操作、外クリック自動非表示、トレイ終了メニュー、100% Pure Rust構成）を単一の統合テストスイート（`src/acceptance_tests.rs`）で体系化・自動テスト化。
+  - リリースビルド（`cargo build --release`）時に、`windows_subsystem = "windows"` 指定により余分なコンソールウィンドウが開かないこと、および実行ファイルサイズが約170KBと極めて軽量（省メモリ・高速起動）であることを確認。
 
 

@@ -6,6 +6,9 @@ pub mod render;
 pub mod tray;
 pub mod window;
 
+#[cfg(test)]
+mod acceptance_tests;
+
 use windows::core::Result;
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, TranslateMessage, MSG,
